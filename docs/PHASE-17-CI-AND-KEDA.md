@@ -20,10 +20,8 @@ something the project already runs by hand, now automatic:
 The fast jobs gate every change; the slow end-to-end run doesn't hold up
 every push.
 
-**This repository isn't on GitHub yet** (it isn't even a git repository).
-The workflow is ready for the moment it is pushed; until then each job is
-verified by running the same commands locally in the same Linux containers
-(§6).
+The repository is https://github.com/Darshan07218/SENTINELCLOUD; runs are
+under its Actions tab (results in §6).
 
 ## 2. Queue-based autoscaling with KEDA
 
@@ -167,8 +165,14 @@ On Docker Desktop Kubernetes:
 
 | `images` job's command, all 12 images (`docker build -t sentinelcloud/<image>:ci`) | 12 / 12 exit 0 (local layer cache, so not a cold build) |
 
-Not run: the GitHub-hosted workflow itself (needs a push to GitHub) and the
-nightly `system` job. That job brings up the whole Compose stack as project
+On GitHub (https://github.com/Darshan07218/SENTINELCLOUD):
+
+| Run | Result |
+|---|---|
+| First push (`f39d2f8`) | 14 / 16 green; `node` and `manifests` failed with exit 126: the `.sh` files were committed from Windows without the executable bit |
+| Fix (`ed23076`): `git update-index --chmod=+x` on all 11 scripts; actions v4 → v5 (Node 20 deprecation) | **16 / 16 green** (run 40118088261): node 82 s, java 24 s each, alerts, manifests, 12 image builds |
+
+Not run yet: the nightly `system` job. That job brings up the whole Compose stack as project
 `sentinelcloud` and tears it down with its volumes; on the development
 machine it would collide with another Compose project of that name and
 compete with the Kubernetes stack for Docker's ~7.4 GB of memory, so it is
