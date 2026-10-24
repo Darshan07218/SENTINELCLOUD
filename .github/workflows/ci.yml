@@ -29,8 +29,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
       - name: Install dependencies (npm ci where there is a lockfile)
@@ -55,8 +55,8 @@ jobs:
       matrix:
         service: [blood-bank-service, power-service]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "21"
@@ -71,7 +71,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: promtool test rules
         run: |
           docker run --rm -v "$PWD/k8s/base/monitoring/config/prometheus:/cfg:ro" \
@@ -82,7 +82,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Throwaway secrets (.env and k8s secrets.env)
         run: |
           ./scripts/generate-secrets.sh compose
@@ -108,7 +108,7 @@ jobs:
       matrix:
         image: [gateway, auth-service, hospital-service, ambulance-service, blood-bank-service, power-service, disaster-service, notification-service, resilience-service, response-service, simulator-service, frontend]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: docker build
         run: |
           context="services/${{ matrix.image }}"
@@ -121,8 +121,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
       - name: Throwaway secrets
