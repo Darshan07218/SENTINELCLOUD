@@ -184,6 +184,37 @@ export function createHospitalRepository(pool) {
       return mapRow(rows[0]);
     },
 
+    /**
+     * Phase 18: capacity history for the forecast — every row since `since`
+     * plus the last row before it (the value in force when the window
+     * starts), oldest first.
+     */
+    async capacityHistory(hospitalId, since) {
+      const columns = `recorded_at, total_beds, available_beds, total_icu_beds, available_icu_beds, source`;
+      const [{ rows: before }, { rows: within }] = await Promise.all([
+        pool.query(
+          `SELECT ${columns} FROM hospital_capacity_history
+            WHERE hospital_id = $1 AND recorded_at < $2
+            ORDER BY recorded_at DESC LIMIT 1`,
+          [hospitalId, since]
+        ),
+        pool.query(
+          `SELECT ${columns} FROM hospital_capacity_history
+            WHERE hospital_id = $1 AND recorded_at >= $2
+            ORDER BY recorded_at ASC LIMIT 5000`,
+          [hospitalId, since]
+        ),
+      ]);
+      return [...before, ...within].map((r) => ({
+        recordedAt: r.recorded_at,
+        totalBeds: r.total_beds,
+        availableBeds: r.available_beds,
+        totalIcuBeds: r.total_icu_beds,
+        availableIcuBeds: r.available_icu_beds,
+        source: r.source,
+      }));
+    },
+
     async setEmergencyStatus(id, status) {
       const { rows } = await pool.query(
         `UPDATE hospitals SET emergency_status = $1 WHERE id = $2 RETURNING *`,

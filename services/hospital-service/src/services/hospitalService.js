@@ -4,6 +4,7 @@ import {
   haversineDistanceKm,
   boundingBoxForRadius,
 } from "./capacity.js";
+import { FORECAST_SETTINGS, RISK_LEVELS, forecastHospital } from "./forecast.js";
 
 /**
  * A hospital's public API representation always includes its computed
@@ -203,6 +204,37 @@ export function createHospitalService({ hospitalRepository, publishEvent, outbox
       }
       const updated = await saveAndAlert((repo) => repo.updateAvailableVentilators(id, availableVentilators));
       return enrich(updated);
+    },
+
+    /** Phase 18: bed and ICU occupancy forecast for one hospital (null if unknown). */
+    async forecastCapacity(id, { horizonHours = 24, nowMs = Date.now() } = {}) {
+      const hospital = await hospitalRepository.findById(id);
+      if (!hospital) return null;
+      const since = new Date(nowMs - FORECAST_SETTINGS.windowHours * 3600 * 1000);
+      const history = await hospitalRepository.capacityHistory(id, since);
+      return forecastHospital(hospital, history, { nowMs, horizonHours });
+    },
+
+    /**
+     * Phase 18: every hospital's forecast, highest risk first, without the
+     * hourly series (the map and the ranking only need the headline
+     * numbers; one hospital's detail comes from forecastCapacity).
+     */
+    async forecastAll({ horizonHours = 24, nowMs = Date.now() } = {}) {
+      const hospitals = await hospitalRepository.findAllForAlerts();
+      const since = new Date(nowMs - FORECAST_SETTINGS.windowHours * 3600 * 1000);
+      const forecasts = await Promise.all(
+        hospitals.map(async (h) => forecastHospital(h, await hospitalRepository.capacityHistory(h.id, since), { nowMs, horizonHours }))
+      );
+      const headline = ({ history, forecast, ...rest }) => rest;
+      return forecasts
+        .map((f) => ({ ...f, beds: headline(f.beds), icu: headline(f.icu) }))
+        .sort(
+          (a, b) =>
+            RISK_LEVELS.indexOf(b.risk) - RISK_LEVELS.indexOf(a.risk) ||
+            b.beds.predictedPct - a.beds.predictedPct ||
+            a.hospitalName.localeCompare(b.hospitalName)
+        );
     },
 
     async setOverloaded(id, overloaded) {

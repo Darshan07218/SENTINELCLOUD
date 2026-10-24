@@ -168,7 +168,12 @@ api_checks() { # label envfile
   [[ $HTTP_CODE == 200 ]] || { ok=0; why+=("alerts → $HTTP_CODE"); }
   http GET /hospitals/not-a-uuid
   [[ $HTTP_CODE == 400 ]] || { ok=0; why+=("bad id → $HTTP_CODE (want 400)"); }
-  ((ok)) && record "4 Hospital service" PASS "$label: $hcount hospitals, SQL summary matches, radius search, alerts, 400 on bad id" \
+  # Phase 18: capacity forecast (the demo backfill gives every seeded hospital history).
+  http GET "/hospitals/forecast?horizonHours=24"
+  [[ $HTTP_CODE == 200 && $(printf '%s' "$HTTP_BODY" | js 'd.count') == "$hcount" ]] || { ok=0; why+=("forecast list → $HTTP_CODE count=$(printf '%s' "$HTTP_BODY" | js 'd&&d.count')"); }
+  http GET "/hospitals/$hid/forecast?horizonHours=12"
+  [[ $HTTP_CODE == 200 && $(printf '%s' "$HTTP_BODY" | js 'd.forecast.beds.status+":"+d.forecast.beds.forecast.length') == "OK:12" ]] || { ok=0; why+=("forecast → $HTTP_CODE $(printf '%s' "$HTTP_BODY" | js 'd&&d.forecast&&d.forecast.beds.status')"); }
+  ((ok)) && record "4 Hospital service" PASS "$label: $hcount hospitals, SQL summary matches, radius search, alerts, 400 on bad id, capacity forecast" \
          || record "4 Hospital service" FAIL "$label: ${why[*]}"
 
   # ---- 5 Ambulance -----------------------------------------------------
@@ -248,8 +253,13 @@ api_checks() { # label envfile
     [[ $HTTP_CODE == 200 || $HTTP_CODE == 201 ]] || { ok=0; why+=("recovery telemetry → $HTTP_CODE (the old double-open-event bug made this 500)"); }
     http GET "/power/transformers/$tid/failures"
     [[ $HTTP_CODE == 200 ]] || { ok=0; why+=("failures → $HTTP_CODE"); }
+    # Phase 18: risk forecast — the transformer just failed, so it has a failure on record.
+    http GET "/power/transformers/$tid/risk-forecast?horizonHours=24"
+    [[ $HTTP_CODE == 200 && $(printf '%s' "$HTTP_BODY" | js 'd.risk.forecast.failuresLast30Days>=1&&d.risk.forecast.projection.length===25') == true ]] || { ok=0; why+=("risk forecast → $HTTP_CODE"); }
   fi
-  ((ok)) && record "7 Power service" PASS "$label: map/summary/alerts/overloaded/high-temp, CRITICAL → FAILED → recovered via telemetry" \
+  http GET "/power/transformers/risk-forecast"
+  [[ $HTTP_CODE == 200 && $(printf '%s' "$HTTP_BODY" | js 'd.count>=1&&d.risks.every((r,i,a)=>i===0||a[i-1].forecast.score>=r.forecast.score)') == true ]] || { ok=0; why+=("risk ranking → $HTTP_CODE"); }
+  ((ok)) && record "7 Power service" PASS "$label: map/summary/alerts/overloaded/high-temp, CRITICAL → FAILED → recovered via telemetry, risk forecast" \
          || record "7 Power service" FAIL "$label: ${why[*]}"
 
   # ---- 8 Disaster event flow --------------------------------------------

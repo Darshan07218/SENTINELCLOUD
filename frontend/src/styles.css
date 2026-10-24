@@ -378,6 +378,11 @@ code { font-family: var(--mono); font-size: 0.85em; background: rgba(148, 163, 1
 .sc-table tbody tr:last-child td { border-bottom: none; }
 .sc-cell-strong { color: var(--text); font-weight: 550; }
 .sc-cell-sub { color: var(--faint); font-size: 0.74rem; margin-top: 2px; }
+/* Phase 18: forecast rankings — the row's name is a button that selects it. */
+.sc-table tbody tr.is-selected { background: rgba(56, 189, 248, 0.09); }
+.sc-row-btn { all: unset; cursor: pointer; display: block; text-align: left; }
+.sc-row-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
+.sc-reasons { margin: 0.75rem 0 0; padding-left: 1.1rem; color: var(--muted); font-size: 0.8rem; line-height: 1.6; }
 
 /* ------------------------------------------------------------------ */
 /* Forms & buttons                                                     */

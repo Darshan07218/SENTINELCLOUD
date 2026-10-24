@@ -6,6 +6,7 @@ import com.sentinelcloud.power.dto.TransformerDtos.*;
 import com.sentinelcloud.power.entity.Substation;
 import com.sentinelcloud.power.entity.Transformer;
 import com.sentinelcloud.power.security.AuthenticatedUser;
+import com.sentinelcloud.power.service.RiskForecastService;
 import com.sentinelcloud.power.service.SubstationService;
 import com.sentinelcloud.power.service.TelemetryService;
 import com.sentinelcloud.power.service.TransformerService;
@@ -32,11 +33,14 @@ public class TransformerController {
     private final TransformerService transformerService;
     private final TelemetryService telemetryService;
     private final SubstationService substationService;
+    private final RiskForecastService riskForecastService;
 
-    public TransformerController(TransformerService transformerService, TelemetryService telemetryService, SubstationService substationService) {
+    public TransformerController(TransformerService transformerService, TelemetryService telemetryService, SubstationService substationService,
+                                 RiskForecastService riskForecastService) {
         this.transformerService = transformerService;
         this.telemetryService = telemetryService;
         this.substationService = substationService;
+        this.riskForecastService = riskForecastService;
     }
 
     @GetMapping("/{id}")
@@ -80,6 +84,15 @@ public class TransformerController {
     public Map<String, Object> anomalies(@PathVariable UUID id) {
         Transformer transformer = transformerService.getOrThrow(id);
         return Map.of("anomalyReport", telemetryService.checkCurrentReading(transformer));
+    }
+
+    // -------------------------------------------------------------
+    // Phase 18 — risk forecast for one transformer (trend, projection, reasons)
+    // -------------------------------------------------------------
+    @GetMapping("/{id}/risk-forecast")
+    public Map<String, Object> riskForecast(@PathVariable UUID id,
+                                            @RequestParam(defaultValue = "24") @Min(1) @Max(72) int horizonHours) {
+        return Map.of("risk", riskForecastService.forecast(id, horizonHours));
     }
 
     @GetMapping("/{id}/failures")

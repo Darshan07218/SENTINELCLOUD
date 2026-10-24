@@ -11,6 +11,7 @@ import {
 import { settle, latestOnly } from "../lib/settle.js";
 import { BarChart, LineChart } from "../components/MiniCharts.jsx";
 import LiveMap from "../components/LiveMap.jsx";
+import TransformerRiskPanel from "../components/TransformerRiskPanel.jsx";
 import { Alert, Badge, Card, Empty, Loading, PageHeader, StatCard } from "../components/ui.jsx";
 
 const STATUS_COLORS = {
@@ -167,6 +168,9 @@ export default function PowerDashboard() {
         <SubstationMap markers={markers} />
         <Legend />
       </Card>
+
+      {/* Phase 18: where each transformer's load and temperature are heading */}
+      <TransformerRiskPanel />
 
       <div className="sc-grid-2 sc-section">
         <Card title="Transformers by Status" icon="chart">

@@ -58,6 +58,21 @@ function buildTestApp() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
   `);
+  // Phase 18: the forecast's input. The real migration fills it with a
+  // trigger (tested against real Postgres in tests/db); here rows are
+  // inserted directly.
+  db.public.none(`
+    CREATE TABLE hospital_capacity_history (
+      id BIGSERIAL PRIMARY KEY,
+      hospital_id UUID NOT NULL,
+      recorded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      total_beds INTEGER NOT NULL,
+      available_beds INTEGER NOT NULL,
+      total_icu_beds INTEGER NOT NULL,
+      available_icu_beds INTEGER NOT NULL,
+      source VARCHAR(16) NOT NULL DEFAULT 'live'
+    );
+  `);
 
   const { Pool } = db.adapters.createPg();
   const pool = new Pool();
@@ -75,6 +90,7 @@ function buildTestApp() {
     res.status(500).json({ error: { code: "INTERNAL_ERROR", message: err.message } });
   });
 
+  app.locals.db = db;
   return app;
 }
 
@@ -278,5 +294,79 @@ describe("Hospital Service HTTP API (in-memory DB)", () => {
     assert.equal(res.status, 200);
     assert.ok(res.body.summary.totalHospitals >= 1);
     assert.ok(res.body.summary.totalBeds >= 100);
+  });
+});
+
+describe("Phase 18: capacity forecast routes (in-memory DB)", () => {
+  let app;
+  let hospitalId;
+  const adminToken = makeToken({ id: randomUUID(), role: "SYSTEM_ADMIN" });
+  const citizenToken = makeToken({ id: randomUUID(), role: "CITIZEN" });
+
+  before(async () => {
+    app = buildTestApp();
+    const res = await request(app)
+      .post("/")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ ...sampleHospital, name: "Forecast Test Hospital", totalBeds: 100, availableBeds: 20 });
+    hospitalId = res.body.hospital.id;
+    // 48 hours filling at 0.5 beds per hour, ending at the current 20 free beds.
+    for (let k = 48; k >= 1; k--) {
+      const recordedAt = new Date(Date.now() - k * 3600 * 1000).toISOString();
+      const available = Math.min(100, 20 + Math.round(k * 0.5));
+      app.locals.db.public.none(
+        `INSERT INTO hospital_capacity_history (hospital_id, recorded_at, total_beds, available_beds, total_icu_beds, available_icu_beds, source)
+         VALUES ('${hospitalId}', '${recordedAt}', 100, ${available}, 10, 3, '${k > 24 ? "backfill" : "live"}')`
+      );
+    }
+  });
+
+  test("GET /:id/forecast returns the hourly history, a 24 h forecast and an upward trend", async () => {
+    const res = await request(app).get(`/${hospitalId}/forecast`).set("Authorization", `Bearer ${citizenToken}`);
+    assert.equal(res.status, 200);
+    const f = res.body.forecast;
+    assert.equal(f.hospitalId, hospitalId);
+    assert.equal(f.horizonHours, 24);
+    assert.equal(f.historyPoints, 48);
+    assert.equal(f.backfilledPoints, 24);
+    assert.equal(f.beds.status, "OK");
+    assert.equal(f.beds.currentPct, 80);
+    assert.equal(f.beds.forecast.length, 24);
+    assert.ok(f.beds.trendPctPerHour > 0);
+    assert.ok(f.beds.history.length >= 48);
+  });
+
+  test("GET /:id/forecast honours horizonHours and rejects out-of-range values", async () => {
+    const ok = await request(app).get(`/${hospitalId}/forecast?horizonHours=6`).set("Authorization", `Bearer ${citizenToken}`);
+    assert.equal(ok.status, 200);
+    assert.equal(ok.body.forecast.beds.forecast.length, 6);
+    for (const bad of ["0", "73", "abc"]) {
+      const res = await request(app).get(`/${hospitalId}/forecast?horizonHours=${bad}`).set("Authorization", `Bearer ${citizenToken}`);
+      assert.equal(res.status, 400, `horizonHours=${bad}`);
+    }
+  });
+
+  test("GET /:id/forecast is 404 for an unknown hospital and 400 for a non-UUID", async () => {
+    const missing = await request(app).get(`/${randomUUID()}/forecast`).set("Authorization", `Bearer ${citizenToken}`);
+    assert.equal(missing.status, 404);
+    const bad = await request(app).get(`/not-a-uuid/forecast`).set("Authorization", `Bearer ${citizenToken}`);
+    assert.equal(bad.status, 400);
+  });
+
+  test("GET /forecast lists every hospital with headline numbers only, highest risk first", async () => {
+    const res = await request(app).get("/forecast").set("Authorization", `Bearer ${citizenToken}`);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.count, 1);
+    const [f] = res.body.forecasts;
+    assert.equal(f.hospitalId, hospitalId);
+    assert.ok(["LOW", "MODERATE", "HIGH", "CRITICAL"].includes(f.risk));
+    assert.equal(f.beds.history, undefined);
+    assert.equal(f.beds.forecast, undefined);
+    assert.equal(typeof f.beds.predictedPct, "number");
+  });
+
+  test("forecast routes require authentication", async () => {
+    assert.equal((await request(app).get("/forecast")).status, 401);
+    assert.equal((await request(app).get(`/${hospitalId}/forecast`)).status, 401);
   });
 });

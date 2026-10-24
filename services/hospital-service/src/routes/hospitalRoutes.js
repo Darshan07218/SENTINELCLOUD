@@ -11,6 +11,7 @@ import {
   overloadSchema,
   nearQuerySchema,
   paginationQuerySchema,
+  forecastQuerySchema,
 } from "../schemas/hospitalSchemas.js";
 
 const MANAGER_ROLES = ["HOSPITAL_ADMIN", "SYSTEM_ADMIN"];
@@ -87,6 +88,17 @@ export function createHospitalRouter({ hospitalService, hospitalRepository }) {
     }
   });
 
+  // Phase 18: every hospital's bed/ICU occupancy forecast, highest risk
+  // first (headline numbers; the hourly series is on /:id/forecast).
+  router.get("/forecast", validateQuery(forecastQuerySchema), async (req, res, next) => {
+    try {
+      const forecasts = await hospitalService.forecastAll({ horizonHours: req.query.horizonHours });
+      res.status(200).json({ forecasts, count: forecasts.length, horizonHours: req.query.horizonHours });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   // ---------------------------------------------------------------
   // Feature 1 — register hospital
   // ---------------------------------------------------------------
@@ -113,6 +125,17 @@ export function createHospitalRouter({ hospitalService, hospitalRepository }) {
       const hospital = await hospitalService.getHospital(req.params.id);
       if (!hospital) return res.status(404).json({ error: { code: "NOT_FOUND", message: "Hospital not found." } });
       res.status(200).json({ hospital });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Phase 18: one hospital's forecast with the hourly history and forecast series.
+  router.get("/:id/forecast", validateQuery(forecastQuerySchema), async (req, res, next) => {
+    try {
+      const forecast = await hospitalService.forecastCapacity(req.params.id, { horizonHours: req.query.horizonHours });
+      if (!forecast) return res.status(404).json({ error: { code: "NOT_FOUND", message: "Hospital not found." } });
+      res.status(200).json({ forecast });
     } catch (err) {
       next(err);
     }

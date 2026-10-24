@@ -74,7 +74,8 @@ export function BarChart({ data, labelKey, valueKey, colorFor, color, height = 1
 }
 
 /**
- * Area/line chart. `series` is [{ values: number[], color, dashed? }].
+ * Area/line chart. `series` is [{ values: number[], color, dashed?, hideDots? }]
+ * (hideDots: no per-point markers, for dense hourly series).
  * All series share the x-axis (index) and the y-axis (max across all).
  */
 export function LineChart({ series, height = 170, minZero = true, xLabels }) {
@@ -134,6 +135,7 @@ export function LineChart({ series, height = 170, minZero = true, xLabels }) {
           })}
         </svg>
         {series.map((s, si) =>
+          !s.hideDots &&
           s.values.map((v, i) =>
             v == null ? null : (
               <span

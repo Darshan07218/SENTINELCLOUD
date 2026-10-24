@@ -137,6 +137,24 @@ paths:
       summary: Dashboard summary — totals, availability, occupancy percentages, overloaded count
       responses:
         "200": { description: Summary stats }
+  /forecast:
+    get:
+      summary: "Phase 18: every hospital's bed/ICU occupancy forecast (headline numbers), highest risk first"
+      parameters:
+        - { name: horizonHours, in: query, schema: { type: integer, minimum: 1, maximum: 72, default: 24 } }
+      responses:
+        "200": { description: "forecasts[] with currentPct, predictedPct, trendPctPerHour, hoursToThreshold (90% line) and risk (LOW/MODERATE/HIGH/CRITICAL) for beds and ICU" }
+        "400": { description: horizonHours out of range }
+  /{id}/forecast:
+    get:
+      summary: "Phase 18: one hospital's forecast with the hourly history, the forecast and its 80% band"
+      parameters:
+        - $ref: "#/components/parameters/HospitalId"
+        - { name: horizonHours, in: query, schema: { type: integer, minimum: 1, maximum: 72, default: 24 } }
+      responses:
+        "200": { description: "forecast with beds/icu: status (OK or INSUFFICIENT_DATA), history[], forecast[] ({at, pct, low, high}); historyPoints and backfilledPoints (synthetic demo history)" }
+        "400": { description: Invalid id or horizonHours }
+        "404": { description: Hospital not found }
 components:
   securitySchemes:
     bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }

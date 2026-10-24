@@ -370,6 +370,50 @@ describe("real PostgreSQL 16", { skip: !ENABLED && "set SC_DB_TEST=1 SC_DB_TEST_
       assert.equal(near[0].id, h.id);
       assert.ok(near.every((x, i) => x.distanceKm <= 5 && (i === 0 || near[i - 1].distanceKm <= x.distanceKm)));
     });
+
+    // Phase 18: capacity history (trigger) and the forecast built on it.
+    test("the trigger records a history row for each capacity change, and none for other updates", async () => {
+      const [h] = await repo.findAllForAlerts();
+      const count = async () =>
+        (await pools.hospital.query("SELECT COUNT(*)::int AS n FROM hospital_capacity_history WHERE hospital_id = $1 AND source = 'live'", [h.id])).rows[0].n;
+      const before = await count();
+      assert.ok(before >= 1, "the INSERT (seed) wrote the first row");
+      await repo.updateAvailableBeds(h.id, Math.max(0, h.availableBeds - 1));
+      assert.equal(await count(), before + 1);
+      await repo.updateProfile(h.id, { emergencyContactName: "Dr. Trigger Test" }); // not a capacity change
+      assert.equal(await count(), before + 1);
+      await repo.updateAvailableIcuBeds(h.id, h.availableIcuBeds); // same value: no change, no row
+      assert.equal(await count(), before + 1);
+      const { rows } = await pools.hospital.query(
+        "SELECT available_beds FROM hospital_capacity_history WHERE hospital_id = $1 ORDER BY recorded_at DESC, id DESC LIMIT 1",
+        [h.id]
+      );
+      assert.equal(rows[0].available_beds, Math.max(0, h.availableBeds - 1));
+    });
+
+    test("the demo backfill gives each hospital 72 h of history once, and the forecast uses it", async () => {
+      const { backfillCapacityHistory } = await importFile(path.join(SVC("hospital-service"), "src", "db", "seed.js"));
+      await quietly(() => backfillCapacityHistory(pools.hospital));
+      await quietly(() => backfillCapacityHistory(pools.hospital)); // second run: nothing more
+      const { rows } = await pools.hospital.query(
+        "SELECT hospital_id, COUNT(*)::int AS n FROM hospital_capacity_history WHERE source = 'backfill' GROUP BY hospital_id"
+      );
+      const all = await repo.findAllForAlerts();
+      assert.ok(rows.length >= all.length - 1, "every hospital without history was backfilled");
+      assert.ok(rows.every((r) => r.n === 72), JSON.stringify(rows));
+      const forecasts = await service.forecastAll({ horizonHours: 12 });
+      assert.equal(forecasts.length, all.length);
+      const backfilled = new Set(rows.map((r) => r.hospital_id));
+      for (const f of forecasts) {
+        assert.ok(f.beds.predictedPct >= 0 && f.beds.predictedPct <= 100);
+        // The hospital the trigger test just changed already had history,
+        // so it wasn't backfilled and has only seconds of it.
+        if (backfilled.has(f.hospitalId)) {
+          assert.equal(f.beds.status, "OK", f.hospitalName);
+          assert.equal(f.backfilledPoints, 72);
+        }
+      }
+    });
   });
 
   // -------------------------------------------------------------------

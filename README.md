@@ -251,6 +251,24 @@ CPU. `scripts/k8s-desktop.ps1 deploy` installs KEDA and uses
 `.\scripts\keda-scale-demo.ps1` shows it scaling 1 → 3 replicas on a
 synthetic backlog. Details: [`docs/PHASE-17-CI-AND-KEDA.md`](docs/PHASE-17-CI-AND-KEDA.md).
 
+## Maps and forecasts (Phase 18)
+
+Every map is a real tiled map (Leaflet, OpenStreetMap data). On top of that:
+
+- **Bed-occupancy forecast** (Hospitals page): every change to a hospital's
+  beds or ICU is recorded (a database trigger), and the next 24 h of
+  occupancy is forecast from the last 7 days, with an 80% band, the hours
+  until the 90% "full" line and a risk level. A map colours each hospital by
+  that risk. API: `GET /api/v1/hospitals/forecast`, `GET /api/v1/hospitals/{id}/forecast`.
+- **Transformer-risk forecast** (Power page): each transformer's load and
+  temperature trend, projected against its critical limits, plus its recent
+  failures and anomalies, as a 0–100 score with the reasons. API:
+  `GET /api/v1/power/transformers/risk-forecast`, `…/transformers/{id}/risk-forecast`.
+
+A fresh install gets 72 h of synthetic hospital history so the forecast has
+something to show; it is marked as such in the API and on the page.
+Details: [`docs/PHASE-18-MAPS-AND-FORECASTS.md`](docs/PHASE-18-MAPS-AND-FORECASTS.md).
+
 ## Stopping the stack
 
 ```bash

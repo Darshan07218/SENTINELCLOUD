@@ -124,6 +124,15 @@ export function fetchHospitalsNear(accessToken, { lat, lng, radiusKm = 25 }) {
   return request(`/hospitals/near?lat=${lat}&lng=${lng}&radiusKm=${radiusKm}`, { accessToken });
 }
 
+// Phase 18: bed/ICU occupancy forecasts.
+export function fetchHospitalForecasts(accessToken, horizonHours = 24) {
+  return request(`/hospitals/forecast?horizonHours=${horizonHours}`, { accessToken });
+}
+
+export function fetchHospitalForecast(accessToken, hospitalId, horizonHours = 24) {
+  return request(`/hospitals/${hospitalId}/forecast?horizonHours=${horizonHours}`, { accessToken });
+}
+
 // ---------------------------------------------------------------------
 // Ambulances & Emergencies (Phase 4)
 // ---------------------------------------------------------------------
@@ -204,6 +213,15 @@ export function fetchTransformerReadings(accessToken, transformerId, limit = 50)
 
 export function fetchTransformerAnomalies(accessToken, transformerId) {
   return request(`/power/transformers/${transformerId}/anomalies`, { accessToken });
+}
+
+// Phase 18: transformer-risk forecasts (the fleet list carries each projection).
+export function fetchTransformerRisks(accessToken, horizonHours = 24) {
+  return request(`/power/transformers/risk-forecast?horizonHours=${horizonHours}`, { accessToken });
+}
+
+export function fetchTransformerRisk(accessToken, transformerId, horizonHours = 24) {
+  return request(`/power/transformers/${transformerId}/risk-forecast?horizonHours=${horizonHours}`, { accessToken });
 }
 
 export function fetchTransformerFailureHistory(accessToken, transformerId) {

@@ -91,6 +91,11 @@ export const nearQuerySchema = z.object({
   radiusKm: z.coerce.number().positive().max(500).default(25),
 });
 
+// Phase 18: how far ahead the capacity forecast looks (hours).
+export const forecastQuerySchema = z.object({
+  horizonHours: z.coerce.number().int().min(1).max(72).default(24),
+});
+
 export const paginationQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(20),

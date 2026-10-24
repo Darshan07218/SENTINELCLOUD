@@ -4,6 +4,7 @@ import com.sentinelcloud.power.entity.TransformerReading;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
@@ -19,4 +20,7 @@ public interface TransformerReadingRepository extends JpaRepository<TransformerR
     List<TransformerReading> findByTransformerIdOrderByRecordedAtDesc(UUID transformerId, Pageable pageable);
 
     long countByTransformerId(UUID transformerId);
+
+    /** Phase 18: the risk forecast's window — newest first, capped by the Pageable. */
+    List<TransformerReading> findByTransformerIdAndRecordedAtAfterOrderByRecordedAtDesc(UUID transformerId, Instant after, Pageable pageable);
 }

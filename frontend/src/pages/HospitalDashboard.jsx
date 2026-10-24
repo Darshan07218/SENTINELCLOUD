@@ -3,6 +3,7 @@ import { useAuth } from "../auth/AuthContext.jsx";
 import { fetchHospitalSummary, fetchHospitals, fetchHospitalAlerts } from "../lib/api.js";
 import { settle } from "../lib/settle.js";
 import { Alert, Badge, Card, Empty, Gauge, Loading, PageHeader, StatCard } from "../components/ui.jsx";
+import CapacityForecast from "../components/CapacityForecast.jsx";
 
 const STATUS_COLORS = {
   NORMAL: "#22c55e",
@@ -136,6 +137,9 @@ export default function HospitalDashboard() {
           )}
         </Card>
       </div>
+
+      {/* Phase 18: map coloured by forecast risk, ranking, per-hospital trend */}
+      <CapacityForecast />
 
       {/* Hospital list */}
       <Card title="Hospital Network" icon="layers" subtitle={`${hospitals.length} facilities`} className="sc-card-flush" style={{ padding: 0 }}>

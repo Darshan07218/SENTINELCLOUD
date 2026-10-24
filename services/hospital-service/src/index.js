@@ -10,7 +10,7 @@ import swaggerUi from "swagger-ui-express";
 
 import { initPool, checkDbConnection, waitForDb, withStartupLock, closePool } from "./db.js";
 import { runMigrations } from "./db/migrate.js";
-import { seedSampleHospitals } from "./db/seed.js";
+import { seedSampleHospitals, backfillCapacityHistory } from "./db/seed.js";
 import { withTransaction } from "./db/transaction.js";
 import { createOutbox } from "./outbox.js";
 import { connectBroker, isBrokerConnected, getBrokerError, publishEvent, assertQueueAndBind, consumeQueue } from "./broker.js";
@@ -161,6 +161,8 @@ async function start() {
   await withStartupLock(async () => {
     await runMigrations(pool);
     await seedSampleHospitals(pool);
+    // Phase 18: demo history for the capacity forecast (see db/seed.js).
+    await backfillCapacityHistory(pool);
   });
 
   const hospitalRepository = createHospitalRepository(pool);

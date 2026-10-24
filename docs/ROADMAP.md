@@ -24,8 +24,8 @@ Status is updated at the top of each phase's entry as work completes.
 | 14 | Reliable events: transactional outbox, publisher confirms, retries + dead-letter queue, outbox/dead-letter monitoring. See [docs/PHASE-14-RELIABLE-EVENTS.md](PHASE-14-RELIABLE-EVENTS.md). | ✅ Done |
 | 15 | Automated response engine: playbooks per disaster type/severity, auto and approval modes, recorded and reversible actions, escalation. See [docs/PHASE-15-RESPONSE-ENGINE.md](PHASE-15-RESPONSE-ENGINE.md). | ✅ Done |
 | 16 | Scenario simulator: scripted disasters played out through the API with their own service account, and background activity (ambulance trips, readings). See [docs/PHASE-16-SIMULATOR.md](PHASE-16-SIMULATOR.md). | ✅ Done |
-| 17 | CI pipeline running `scripts/run-node-tests.sh`, `mvn test`, promtool and `verify-system.sh compose` on every push; KEDA autoscaling on queue length. See [docs/PHASE-17-CI-AND-KEDA.md](PHASE-17-CI-AND-KEDA.md). | ✅ **Done — this phase** |
-| 18 | Real tiled map integration (Leaflet) replacing the schematic SVG maps; bed-occupancy and transformer-risk forecasts | Planned |
+| 17 | CI pipeline running `scripts/run-node-tests.sh`, `mvn test`, promtool and `verify-system.sh compose` on every push; KEDA autoscaling on queue length. See [docs/PHASE-17-CI-AND-KEDA.md](PHASE-17-CI-AND-KEDA.md). | ✅ Done |
+| 18 | Real tiled maps (Leaflet) everywhere, incl. a hospital risk map; bed-occupancy forecast (capacity history via trigger, damped Holt smoothing, ETA to the 90 % line) and transformer-risk forecast (trend projection, 0–100 score with reasons). See [docs/PHASE-18-MAPS-AND-FORECASTS.md](PHASE-18-MAPS-AND-FORECASTS.md). | ✅ **Done — this phase** |
 
 ## Rule for every phase
 

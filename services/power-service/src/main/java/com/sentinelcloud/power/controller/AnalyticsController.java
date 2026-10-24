@@ -6,11 +6,15 @@ import com.sentinelcloud.power.dto.TransformerDtos.TransformerResponse;
 import com.sentinelcloud.power.entity.Substation;
 import com.sentinelcloud.power.entity.Transformer;
 import com.sentinelcloud.power.service.AlertService;
+import com.sentinelcloud.power.service.RiskForecastService;
 import com.sentinelcloud.power.service.SubstationService;
 import com.sentinelcloud.power.service.TelemetryService;
 import com.sentinelcloud.power.service.ThresholdEngine;
 import com.sentinelcloud.power.service.TransformerService;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.LinkedHashMap;
@@ -32,13 +36,15 @@ public class AnalyticsController {
     private final TransformerService transformerService;
     private final TelemetryService telemetryService;
     private final AlertService alertService;
+    private final RiskForecastService riskForecastService;
 
     public AnalyticsController(SubstationService substationService, TransformerService transformerService,
-                                TelemetryService telemetryService, AlertService alertService) {
+                                TelemetryService telemetryService, AlertService alertService, RiskForecastService riskForecastService) {
         this.substationService = substationService;
         this.transformerService = transformerService;
         this.telemetryService = telemetryService;
         this.alertService = alertService;
+        this.riskForecastService = riskForecastService;
     }
 
     /** Feature 6 — identify overloaded transformers (last load% at or above the warning band). */
@@ -57,6 +63,13 @@ public class AnalyticsController {
             .map(TransformerResponse::of)
             .collect(Collectors.toList());
         return Map.of("highTemperatureTransformers", transformers, "count", transformers.size(), "warningThresholdC", ThresholdEngine.TEMP_WARNING_C);
+    }
+
+    /** Phase 18 — every transformer's risk forecast, highest score first. */
+    @GetMapping("/transformers/risk-forecast")
+    public Map<String, Object> riskForecast(@RequestParam(defaultValue = "24") @Min(1) @Max(72) int horizonHours) {
+        List<RiskForecastService.TransformerRisk> risks = riskForecastService.forecastAll(horizonHours);
+        return Map.of("risks", risks, "count", risks.size(), "horizonHours", horizonHours);
     }
 
     /** Feature 4 — generate infrastructure alerts (overloaded + high-temp + failed + inspection-overdue, prioritized). */
