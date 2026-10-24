@@ -283,11 +283,20 @@ api_checks() { # label envfile
   # ---- 9 Message broker -------------------------------------------------
   step "[$label] 9 Message broker"
   ok=1 why=()
-  http GET "/notifications/events/recent?limit=200"
-  local seen
-  seen=$(printf '%s' "$HTTP_BODY" | js "d.events.filter(e=>e.correlationId==='$did').map(e=>e.eventType).sort().join(',')")
-  for k in disaster.detected hospital.capacity.updated ambulance.status.updated blood.shortage.detected power.infrastructure.at_risk disaster.resolved; do
-    [[ ",$seen," == *",$k,"* ]] || { ok=0; why+=("$k not in the event history"); }
+  # Events leave through the outbox (Phase 14), so the last one
+  # (disaster.resolved, set just above) can take a few seconds to arrive.
+  local seen kinds="disaster.detected hospital.capacity.updated ambulance.status.updated blood.shortage.detected power.infrastructure.at_risk disaster.resolved"
+  local deadline=$((SECONDS + 30)) missing
+  while :; do
+    http GET "/notifications/events/recent?limit=200"
+    seen=$(printf '%s' "$HTTP_BODY" | js "d.events.filter(e=>e.correlationId==='$did').map(e=>e.eventType).sort().join(',')")
+    missing=0
+    for k in $kinds; do [[ ",$seen," == *",$k,"* ]] || missing=1; done
+    ((missing == 0 || SECONDS >= deadline)) && break
+    sleep 2
+  done
+  for k in $kinds; do
+    [[ ",$seen," == *",$k,"* ]] || { ok=0; why+=("$k not in the event history after 30 s"); }
   done
   local queues
   queues=$(broker_queues "$label")
@@ -373,12 +382,12 @@ compose_run() {
   local pu dbs roles migr ok=1 why=()
   pu=$(envval .env POSTGRES_USER); pu=${pu:-sentinel}
   dbs=$(docker compose exec -T postgres psql -U "$pu" -d postgres -Atc "SELECT string_agg(datname || ':' || pg_get_userbyid(datdba), ' ' ORDER BY datname) FROM pg_database WHERE datname LIKE '%\_db'" 2>&1)
-  for pair in ambulance_db:ambulance_svc auth_db:auth_svc blood_db:blood_bank_svc disaster_db:disaster_svc hospital_db:hospital_svc power_db:power_svc; do
+  for pair in ambulance_db:ambulance_svc auth_db:auth_svc blood_db:blood_bank_svc disaster_db:disaster_svc hospital_db:hospital_svc power_db:power_svc response_db:response_svc; do
     [[ " $dbs " == *" $pair "* ]] || { ok=0; why+=("missing $pair"); }
   done
   roles=$(docker compose exec -T postgres psql -U "$pu" -d postgres -Atc "SELECT count(*) FROM pg_roles WHERE rolname LIKE '%\_svc' AND NOT rolsuper AND NOT rolcreatedb AND NOT rolcreaterole")
-  [[ ${roles//[^0-9]/} == 6 ]] || { ok=0; why+=("least-privilege roles: $roles/6"); }
-  for d in auth_db hospital_db ambulance_db disaster_db; do
+  [[ ${roles//[^0-9]/} == 7 ]] || { ok=0; why+=("least-privilege roles: $roles/7"); }
+  for d in auth_db hospital_db ambulance_db disaster_db response_db; do
     migr=$(docker compose exec -T postgres psql -U "$pu" -d "$d" -Atc "SELECT count(*) FROM schema_migrations" 2>&1)
     [[ ${migr//[^0-9]/} -ge 1 ]] || { ok=0; why+=("$d schema_migrations: $migr"); }
   done
@@ -386,7 +395,7 @@ compose_run() {
     migr=$(docker compose exec -T postgres psql -U "$pu" -d "$d" -Atc "SELECT count(*) FROM flyway_schema_history WHERE success" 2>&1)
     [[ ${migr//[^0-9]/} -ge 3 ]] || { ok=0; why+=("$d flyway: $migr"); }
   done
-  ((ok)) && record "2 Database initialisation" PASS "6 databases each owned by its own non-superuser role; Node migrations + Flyway V1–V3 applied" \
+  ((ok)) && record "2 Database initialisation" PASS "7 databases each owned by its own non-superuser role; Node migrations + Flyway V1–V3 applied" \
          || record "2 Database initialisation" FAIL "${why[*]}"
 
   api_checks compose .env

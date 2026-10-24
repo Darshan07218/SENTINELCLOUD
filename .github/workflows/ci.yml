@@ -127,5 +127,8 @@ jobs:
           node-version: 22
       - name: Throwaway secrets
         run: ./scripts/generate-secrets.sh compose
+      # Unit tests and the real-PostgreSQL suite already run in the `node` and
+      # `java` jobs (the suite needs each service's node_modules, which this
+      # job doesn't install).
       - name: verify-system.sh (13 checks, from clean)
-        run: ./scripts/verify-system.sh compose --yes --skip-unit --teardown
+        run: ./scripts/verify-system.sh compose --yes --skip-unit --skip-db-suite --teardown
