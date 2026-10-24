@@ -172,7 +172,11 @@ On GitHub (https://github.com/Darshan07218/SENTINELCLOUD):
 | First push (`f39d2f8`) | 14 / 16 green; `node` and `manifests` failed with exit 126: the `.sh` files were committed from Windows without the executable bit |
 | Fix (`ed23076`): `git update-index --chmod=+x` on all 11 scripts; actions v4 → v5 (Node 20 deprecation) | **16 / 16 green** (run 40118088261): node 82 s, java 24 s each, alerts, manifests, 12 image builds |
 
-Not run yet: the nightly `system` job. That job brings up the whole Compose stack as project
+| `system` job, run #4 (`84ddc29`) | failed at startup: `rabbitmq hook exited with status 137`. On a fresh volume the post_start hook (run as root) created the Erlang cookie before the broker did; the broker couldn't read it (`eacces`) and crashed. Never seen locally because existing volumes already had a cookie. Fix (`b15a864`): the hook runs as `rabbitmq` and waits for the broker's cookie; reproduced and verified on fresh volumes |
+| `system` job, run #6 (`b15a864`) | 10 / 13 green; three stale checks in `verify-system.sh`: role count still 6 (Phase 15 added `response_db`), `disaster.resolved` read before the outbox had delivered it, and the DB suite run without the services' `node_modules`. Fix (`6ad9342`): 7 roles + `response_db` migrations, wait up to 30 s for all six events, `--skip-db-suite` in CI (the `node` job runs that suite) |
+| Run #8 (`6ad9342`), push jobs + `system` | **all 17 jobs green**; end-to-end system check 243 s: 12 checks pass, 11 (Kubernetes) skipped in Compose mode |
+
+Every job of the workflow has now run green on GitHub. That job brings up the whole Compose stack as project
 `sentinelcloud` and tears it down with its volumes; on the development
 machine it would collide with another Compose project of that name and
 compete with the Kubernetes stack for Docker's ~7.4 GB of memory, so it is
