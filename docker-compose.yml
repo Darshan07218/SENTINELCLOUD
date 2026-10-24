@@ -129,8 +129,12 @@ services:
       - ./k8s/base/config/rabbitmq-set-policies.sh:/opt/sentinelcloud/rabbitmq-set-policies.sh:ro
     # Phase 14: once the broker is up, failed messages on the six durable
     # queues are dead-lettered instead of dropped (needs Compose 2.30+).
+    # As the rabbitmq user: run as root, rabbitmqctl could create the Erlang
+    # cookie (owned by root) before the broker does on a fresh volume, and
+    # the broker then crashes reading it (eacces).
     post_start:
       - command: ["sh", "/opt/sentinelcloud/rabbitmq-set-policies.sh"]
+        user: rabbitmq
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 10s

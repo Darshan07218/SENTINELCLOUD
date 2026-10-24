@@ -22,6 +22,15 @@
 # redirect's error message quiet), otherwise to this hook's output.
 log() { (echo "[sentinel-dead-letter] $*" > /proc/1/fd/1) 2>/dev/null || echo "[sentinel-dead-letter] $*"; }
 
+# Let the broker create its Erlang cookie first. If rabbitmqctl ran before
+# that, it would create the cookie itself, and when the hook runs as root
+# (Compose's default) the broker can no longer read it and crashes (eacces).
+i=0
+until [ -f /var/lib/rabbitmq/.erlang.cookie ] || [ "$i" -ge 60 ]; do
+  i=$((i + 1))
+  sleep 1
+done
+
 i=0
 until rabbitmqctl -q await_startup --timeout 10 >/dev/null 2>&1; do
   i=$((i + 1))
