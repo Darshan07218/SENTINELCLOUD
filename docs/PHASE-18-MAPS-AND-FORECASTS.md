@@ -143,3 +143,5 @@ trend that has held for days and still flattens a short burst.
 | `GET /power/transformers/risk-forecast` | 4 transformers, scores 1–6 (LOW), ~300 live simulator readings over 6.8 h each, reasons list the recorded failure and anomaly share |
 | `horizonHours=99` / `horizonHours=0` | 400 / 400 |
 | Deployed bundle | contains both new panels |
+| GitHub CI run #10 (push, `85a5cc4`) | 17 / 17 push jobs green |
+| GitHub CI run #11 (on demand, `85a5cc4`) | **18 / 18 green**, incl. the end-to-end system check (244 s), whose checks 4 and 7 now call all four forecast endpoints on a fresh Compose stack |
