@@ -125,6 +125,22 @@ function Import-ImagesIntoNode {
   }
 }
 
+function Get-CartoBuildArg {
+  # The CARTO basemap key is baked into the frontend bundle at build time
+  # (without it CARTO watermarks every tile "API KEY REQUIRED"). Taken from
+  # the environment, else from .env (gitignored; the same value Compose uses).
+  $key = $env:CARTO_BASEMAP_KEY
+  if (-not $key -and (Test-Path ".env")) {
+    $line = Get-Content ".env" | Where-Object { $_ -match '^\s*CARTO_BASEMAP_KEY\s*=' } | Select-Object -Last 1
+    if ($line) { $key = ($line -split "=", 2)[1].Trim().Trim('"').Trim("'") }
+  }
+  if (-not $key) {
+    Write-Warning "No CARTO_BASEMAP_KEY (environment or .env): map tiles will be watermarked 'API KEY REQUIRED'."
+    return @()
+  }
+  return @("--build-arg", "CARTO_BASEMAP_KEY=$key")
+}
+
 function Install-MetricsServer {
   # The HPAs (and the traffic-surge drill) need CPU metrics.
   # "Continue": in PowerShell 5.1 a redirected native stderr line would otherwise throw.
@@ -180,7 +196,9 @@ function Deploy {
 
   foreach ($name in $Images.Keys) {
     Step "building sentinelcloud/${name}:$Tag"
-    Invoke-Native docker @("build", "-t", "sentinelcloud/${name}:$Tag", $Images[$name])
+    $buildArgs = @("build", "-t", "sentinelcloud/${name}:$Tag")
+    if ($name -eq "frontend") { $buildArgs += Get-CartoBuildArg }
+    Invoke-Native docker ($buildArgs + $Images[$name])
   }
   Import-ImagesIntoNode
   Install-MetricsServer

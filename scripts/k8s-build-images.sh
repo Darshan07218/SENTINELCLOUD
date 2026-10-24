@@ -38,16 +38,27 @@ IMAGES=(
 
 cd "$(dirname "$0")/.."
 
+# The CARTO basemap key is baked into the frontend bundle at build time
+# (keyless tiles are watermarked "API KEY REQUIRED"): from the environment,
+# else from .env (gitignored; the same value Compose uses).
+CARTO_KEY="${CARTO_BASEMAP_KEY:-}"
+if [[ -z "$CARTO_KEY" && -f .env ]]; then
+  CARTO_KEY=$(grep -E '^[[:space:]]*CARTO_BASEMAP_KEY=' .env | tail -1 | cut -d= -f2- | tr -d '"'"'"'[:space:]')
+fi
+[[ -n "$CARTO_KEY" ]] || echo "warning: no CARTO_BASEMAP_KEY (environment or .env): map tiles will be watermarked" >&2
+
 built=()
 for entry in "${IMAGES[@]}"; do
   name="${entry%%:*}"
   context="${entry#*:}"
   image="sentinelcloud/${name}:${TAG}"
+  extra=()
+  [[ "$name" == "frontend" && -n "$CARTO_KEY" ]] && extra=(--build-arg "CARTO_BASEMAP_KEY=$CARTO_KEY")
   echo ">>> building ${image} from ${context}"
   if [[ "$TARGET" == "minikube" ]]; then
-    minikube image build -t "$image" "$context"
+    minikube image build -t "$image" "${extra[@]}" "$context"
   else
-    docker build -t "$image" "$context"
+    docker build -t "$image" "${extra[@]}" "$context"
   fi
   built+=("$image")
 done
