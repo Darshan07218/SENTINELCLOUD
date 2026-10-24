@@ -1,0 +1,131 @@
+# =========================================================================
+# Redis — backs notification-service's recent-events history (the list
+# the live dashboard loads before its WebSocket connects).
+#
+# StatefulSet + PersistentVolumeClaim with append-only persistence, so
+# the recent-events history survives a Redis pod restart instead of the
+# dashboard coming back empty. Single replica: this is a small, bounded
+# list (200 events), not a workload that needs Redis clustering.
+# =========================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: cache
+spec:
+  clusterIP: None # headless governing Service for the StatefulSet
+  selector:
+    app.kubernetes.io/name: redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: cache
+spec:
+  serviceName: redis
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redis
+        app.kubernetes.io/component: cache
+    spec:
+      automountServiceAccountToken: false
+      # Don't inject Docker-link-style env vars (GATEWAY_PORT=tcp://…,
+      # REDIS_PORT=tcp://… etc.) for every Service in the namespace — they
+      # can silently collide with real settings like REDIS_PORT/RABBITMQ_PORT.
+      # Services are found via DNS instead.
+      enableServiceLinks: false
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          imagePullPolicy: IfNotPresent
+          # Phase 12: Redis requires a password (it had none: any pod could
+          # read or rewrite the event history, or use CONFIG SET to write
+          # files). REDISCLI_AUTH lets the redis-cli probes authenticate.
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelcloud-secrets
+                  key: REDIS_PASSWORD
+            - name: REDISCLI_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelcloud-secrets
+                  key: REDIS_PASSWORD
+          # Same pattern as Postgres: root only to fix /data ownership, then
+          # the image drops to the "redis" user.
+          securityContext:
+            allowPrivilegeEscalation: false
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN", "DAC_OVERRIDE", "FOWNER", "SETGID", "SETUID"]
+          args:
+            - redis-server
+            - --requirepass
+            - $(REDIS_PASSWORD)
+            # Admin commands an attacker would use are switched off entirely.
+            - --rename-command
+            - CONFIG
+            - ""
+            - --rename-command
+            - DEBUG
+            - ""
+            - --appendonly
+            - "yes"
+            # Keep Redis's own memory use under the container limit so it
+            # evicts instead of being OOM-killed by the kubelet.
+            - --maxmemory
+            - 100mb
+            - --maxmemory-policy
+            - allkeys-lru
+          ports:
+            - name: redis
+              containerPort: 6379
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 4
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 192Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/name: redis
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 512Mi

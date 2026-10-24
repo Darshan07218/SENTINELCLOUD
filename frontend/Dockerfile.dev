@@ -1,0 +1,16 @@
+# Development image: runs the Vite dev server with hot reload. Used by
+# docker-compose.yml (see `dockerfile: Dockerfile.dev` there). The
+# production image used by Kubernetes (Phase 9) is ./Dockerfile —
+# a static build served by nginx.
+FROM node:22-alpine
+WORKDIR /app
+# Phase 12: the dev server runs as the image's unprivileged "node" user
+# (uid 1000), like every other SentinelCloud container — not as root.
+RUN chown node:node /app
+USER node
+COPY --chown=node:node package.json package-lock.json* ./
+RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
+COPY --chown=node:node . .
+
+EXPOSE 5173
+CMD ["npm", "run", "dev"]

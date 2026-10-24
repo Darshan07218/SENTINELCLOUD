@@ -1,0 +1,33 @@
+# =========================================================================
+# Grafana datasources — provisioned at startup (Phase 10). Same file for
+# Kubernetes (ConfigMap) and Docker Compose (bind mount): in both, the
+# Prometheus and Alertmanager hostnames are just their service names.
+#
+# The fixed uid "prometheus" is what every dashboard panel references,
+# so dashboards work on a fresh Grafana with no manual wiring.
+# =========================================================================
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 15s            # = scrape interval, so $__rate_interval is sized correctly
+      httpMethod: POST
+      manageAlerts: true           # show Prometheus' alert rules in Grafana → Alerting
+      alertmanagerUid: alertmanager
+
+  - name: Alertmanager
+    uid: alertmanager
+    type: alertmanager
+    access: proxy
+    url: http://alertmanager:9093
+    editable: false
+    jsonData:
+      implementation: prometheus
+      handleGrafanaManagedAlerts: false

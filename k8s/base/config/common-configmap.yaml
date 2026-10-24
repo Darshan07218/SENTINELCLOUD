@@ -1,0 +1,29 @@
+# =========================================================================
+# Shared, NON-secret configuration consumed by several services via
+# envFrom. Per-service settings (PORT, DB_NAME, downstream URLs, …) live
+# in each service's own ConfigMap in k8s/base/apps/<service>.yaml; passwords
+# and signing keys live in the Secret generated from config/secrets.env.
+#
+# Service discovery: every *_HOST value below is just a Kubernetes
+# Service name. Pods resolve it through CoreDNS using the namespace
+# search domain (postgres → postgres.sentinelcloud.svc.cluster.local),
+# exactly like Docker Compose's container-name DNS — which is why none
+# of the application code had to change for Kubernetes.
+# =========================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sentinelcloud-common
+data:
+  NODE_ENV: "production"
+
+  DB_HOST: "postgres"
+  DB_PORT: "5432"
+
+  REDIS_HOST: "redis"
+  REDIS_PORT: "6379"
+
+  RABBITMQ_HOST: "rabbitmq"
+  RABBITMQ_PORT: "5672"
+
+

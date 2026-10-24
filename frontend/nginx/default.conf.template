@@ -1,0 +1,99 @@
+# SentinelCloud frontend — nginx site config (template; rendered at
+# container start by the nginx image's envsubst entrypoint).
+
+# ${GATEWAY_UPSTREAM} (default "gateway:8080") is resolved ONCE, at
+# nginx startup, through the container's normal resolver — which in
+# Kubernetes applies the namespace search domains, so the short name
+# "gateway" becomes gateway.sentinelcloud.svc.cluster.local → the
+# gateway Service's ClusterIP. That IP is stable for the Service's
+# whole lifetime and kube-proxy load-balances it across every ready
+# gateway pod, so resolving once is correct here (no per-request DNS
+# needed). If the Service doesn't exist yet nginx exits, the kubelet
+# restarts the container, and it comes up once the Service is there.
+upstream sentinel_gateway {
+    server ${GATEWAY_UPSTREAM};
+    keepalive 16;
+}
+
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+server {
+    listen 8080;
+    server_name _;
+    # Phase 12: no nginx version in the Server header or error pages.
+    server_tokens off;
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # proxy_pass below has no URI part after the upstream name, so nginx
+    # forwards the original request URI (path + query) unchanged.
+
+    # nginx's OWN liveness/readiness endpoint for the Kubernetes probes —
+    # deliberately not proxied, so a gateway outage doesn't get the
+    # frontend pods restarted (the static bundle is still servable).
+    location = /healthz {
+        access_log off;
+        include /etc/nginx/snippets/security-headers.conf;
+        default_type application/json;
+        return 200 '{"status":"ok","service":"frontend"}';
+    }
+
+    # REST API → gateway
+    location /api/ {
+        proxy_pass http://sentinel_gateway;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $http_host;  # with the port: the gateway compares it with the browser's Origin
+        proxy_set_header X-Real-IP $remote_addr;
+        # Phase 12: nginx is the edge, so it SETS X-Forwarded-For to the
+        # address it actually sees. $proxy_add_x_forwarded_for would append
+        # to whatever the client sent, letting it pick its own "IP" for the
+        # gateway's rate limits and audit log.
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # The API only takes small JSON bodies (largest: a few KB).
+        client_max_body_size 1m;
+    }
+
+    # Gateway's own health + aggregated /health/services (System Health panel)
+    location /health {
+        proxy_pass http://sentinel_gateway;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $http_host;  # with the port: the gateway compares it with the browser's Origin
+        proxy_set_header X-Forwarded-For $remote_addr;
+    }
+
+    # Live feed WebSocket → gateway → notification-service
+    location /ws/ {
+        proxy_pass http://sentinel_gateway;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Host $http_host;  # with the port: the gateway compares it with the browser's Origin
+        proxy_set_header X-Forwarded-For $remote_addr;
+        # Long-lived connection; the server sends a heartbeat every 15s,
+        # so this only trips if the feed is genuinely dead.
+        proxy_read_timeout 1h;
+        proxy_send_timeout 1h;
+    }
+
+    # Hashed build assets can be cached forever; index.html must not be.
+    location /assets/ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+        include /etc/nginx/snippets/security-headers.conf;
+        try_files $uri =404;
+    }
+
+    # SPA fallback: React Router owns every other path (/login,
+    # /emergency, /power, …), so unknown paths serve index.html.
+    location / {
+        add_header Cache-Control "no-cache";
+        include /etc/nginx/snippets/security-headers.conf;
+        try_files $uri $uri/ /index.html;
+    }
+}

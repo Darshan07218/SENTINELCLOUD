@@ -1,0 +1,191 @@
+# =========================================================================
+# resilience-service (Phase 11): control plane for the Resilience Demo.
+#
+# Runs controlled SOFTWARE failure drills against SentinelCloud's own
+# services and observes, through the Kubernetes API, how the platform
+# detects and recovers. Exposed only through the gateway at
+# /api/v1/resilience (starting/aborting a drill requires SYSTEM_ADMIN).
+#
+# Objects: ServiceAccount + Role + RoleBinding (least-privilege, this
+# namespace only) → ConfigMap → Deployment (1 replica) → ClusterIP Service.
+# =========================================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: resilience-service
+  labels:
+    app.kubernetes.io/name: resilience-service
+---
+# Exactly the verbs the drills use, in the sentinelcloud namespace only.
+# The only WRITE permissions: delete a pod (power-service / rabbitmq pod
+# loss drills) and patch an HPA (temporarily raise minReplicas so there
+# is a second replica to fail over to; restored after the drill).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: resilience-service
+  labels:
+    app.kubernetes.io/name: resilience-service
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, delete]
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [list]
+  - apiGroups: [discovery.k8s.io]
+    resources: [endpointslices]
+    verbs: [list]
+  - apiGroups: [apps]
+    resources: [deployments, statefulsets]
+    verbs: [get]
+  # Phase 12: only the four drill targets' HPAs, by name — not every HPA
+  # in the namespace. (Pods can't be restricted the same way: their names
+  # are random. Deleting pods remains namespace-wide; documented in SECURITY.md.)
+  - apiGroups: [autoscaling]
+    resources: [horizontalpodautoscalers]
+    resourceNames: [hospital-service, ambulance-service, blood-bank-service, power-service]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: resilience-service
+  labels:
+    app.kubernetes.io/name: resilience-service
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: resilience-service
+subjects:
+  - kind: ServiceAccount
+    name: resilience-service
+    namespace: sentinelcloud
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: resilience-service-config
+  labels:
+    app.kubernetes.io/name: resilience-service
+data:
+  PORT: "8088"
+  RABBITMQ_MGMT_URL: "http://rabbitmq:15672"
+  # Replicas used during pod-failure drills: one fails, the others keep serving.
+  DRILL_REPLICAS: "2"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: resilience-service
+  labels:
+    app.kubernetes.io/name: resilience-service
+    app.kubernetes.io/component: resilience
+spec:
+  # ONE replica, replaced (not rolled): a drill's state lives in this
+  # process, and two engines must never run drills at the same time.
+  replicas: 1
+  strategy:
+    type: Recreate
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: resilience-service
+  template:
+    metadata:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8088"
+        prometheus.io/path: "/metrics"
+      labels:
+        app.kubernetes.io/name: resilience-service
+        app.kubernetes.io/component: resilience
+    spec:
+      serviceAccountName: resilience-service
+      # This service DOES talk to the Kubernetes API (unlike the others),
+      # so it needs its ServiceAccount token mounted.
+      automountServiceAccountToken: true
+      enableServiceLinks: false
+      # On SIGTERM it aborts any running drill and runs its cleanup
+      # (clear injected faults, restore HPA settings) before exiting.
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: resilience-service
+          image: sentinelcloud/resilience-service:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8088
+          envFrom:
+            - configMapRef:
+                name: resilience-service-config
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: JWT_ACCESS_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelcloud-secrets
+                  key: JWT_ACCESS_SECRET
+            - name: CHAOS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelcloud-secrets
+                  key: RESILIENCE_CHAOS_TOKEN
+                  optional: true   # missing → drills report "unavailable" instead of the pod failing
+            - name: RABBITMQ_USER
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelcloud-secrets
+                  key: RABBITMQ_USER
+            - name: RABBITMQ_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelcloud-secrets
+                  key: RABBITMQ_PASSWORD
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: "1"          # the traffic-surge drill generates load from here
+              memory: 192Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: resilience-service
+  labels:
+    app.kubernetes.io/name: resilience-service
+    app.kubernetes.io/component: resilience
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: resilience-service
+  ports:
+    - name: http
+      port: 8088
+      targetPort: http

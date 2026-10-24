@@ -1,0 +1,236 @@
+# =========================================================================
+# API gateway — the single entry point for every /api/v1/* call and the /ws/live WebSocket.
+# Verifies JWTs, enforces write-role rules, and proxies to the domain services by their
+# Kubernetes Service names (internal service discovery via CoreDNS).
+#
+# Objects: ConfigMap (non-secret settings) → Deployment → ClusterIP
+# Service (stable internal DNS name "gateway") → HorizontalPodAutoscaler.
+# =========================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway-config
+  labels:
+    app.kubernetes.io/name: gateway
+data:
+  PORT: "8080"
+  AUTH_SERVICE_URL: "http://auth-service:8081"
+  HOSPITAL_SERVICE_URL: "http://hospital-service:8082"
+  AMBULANCE_SERVICE_URL: "http://ambulance-service:8083"
+  BLOOD_BANK_SERVICE_URL: "http://blood-bank-service:8084"
+  POWER_SERVICE_URL: "http://power-service:8085"
+  DISASTER_SERVICE_URL: "http://disaster-service:8086"
+  NOTIFICATION_SERVICE_URL: "http://notification-service:8087"
+  NOTIFICATION_SERVICE_WS_URL: "ws://notification-service:8087"
+  RESILIENCE_SERVICE_URL: "http://resilience-service:8088"
+  RESPONSE_SERVICE_URL: "http://response-service:8089"
+  SIMULATOR_SERVICE_URL: "http://simulator-service:8090"
+  # ---- Phase 12 ----
+  # One reverse proxy (the frontend's nginx) sits in front of the gateway,
+  # so exactly one X-Forwarded-For hop is trusted when working out the
+  # client IP for rate limits and the audit log.
+  TRUST_PROXY_HOPS: "1"
+  # Browser origins allowed to call the API cross-origin and open /ws/live.
+  # The frontend on :30080 is same-origin and needs no entry; this one is
+  # for a Vite dev server (npm run dev) pointed at the cluster.
+  CORS_ALLOWED_ORIGINS: "http://localhost:5173"
+  RATE_LIMIT_API_PER_MINUTE: "600"     # per client IP, all /api/v1 calls
+  RATE_LIMIT_WRITES_PER_MINUTE: "60"   # per user, POST/PUT/PATCH/DELETE
+  RATE_LIMIT_WS_PER_MINUTE: "30"       # per client IP, live-feed connects
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  labels:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/component: api-gateway
+spec:
+  # spec.replicas is intentionally NOT set: the HorizontalPodAutoscaler
+  # below owns the replica count. If it were set here, every
+  # `kubectl apply -k k8s/overlays/local` would reset the count and fight the HPA.
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gateway
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1        # start one new pod before…
+      maxUnavailable: 0  # …taking any old pod away → zero-downtime rollouts
+  template:
+    metadata:
+      annotations:
+        # Phase 10: opt in to Prometheus scraping (see the sentinelcloud-pods
+        # job in k8s/base/monitoring/config/prometheus/prometheus.yml).
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+      labels:
+        app.kubernetes.io/name: gateway
+        app.kubernetes.io/component: api-gateway
+    spec:
+      automountServiceAccountToken: false # the app never talks to the Kubernetes API
+      # Don't inject Docker-link-style env vars (GATEWAY_PORT=tcp://…,
+      # REDIS_PORT=tcp://… etc.) for every Service in the namespace — they
+      # can silently collide with real settings like REDIS_PORT/RABBITMQ_PORT.
+      # Services are found via DNS instead.
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      # Spread replicas across nodes when there is more than one node;
+      # a no-op on single-node Minikube/Kind (ScheduleAnyway never blocks).
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: gateway
+      containers:
+        - name: gateway
+          image: sentinelcloud/gateway:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: sentinelcloud-common
+            - configMapRef:
+                name: gateway-config
+          env:
+            - name: JWT_ACCESS_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelcloud-secrets
+                  key: JWT_ACCESS_SECRET
+            - name: RABBITMQ_USER
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelcloud-secrets
+                  key: RABBITMQ_USER
+            - name: RABBITMQ_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelcloud-secrets
+                  key: RABBITMQ_PASSWORD
+            - name: RABBITMQ_URL
+              value: "amqp://$(RABBITMQ_USER):$(RABBITMQ_PASSWORD)@$(RABBITMQ_HOST):$(RABBITMQ_PORT)"
+          # Startup probe: /health only answers once the HTTP server is listening,
+          # which happens AFTER migrations + seeding (and after waiting for the
+          # migration lock if another replica holds it). Allows up to 2.5 min.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+            failureThreshold: 30
+          # Liveness: process is alive and its event loop responds. No
+          # dependency checks — a Postgres/RabbitMQ outage must NOT restart pods.
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # Readiness: /health/ready reports RabbitMQ but doesn't require it
+          # (Phase 10): a broker outage must not take the whole API out of
+          # rotation. Downstream services are reported by /health/services.
+          # Failing readiness removes the pod from the Service's endpoints
+          # (no traffic) without restarting it.
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # Graceful termination: when a pod is deleted, the kubelet runs
+          # preStop and, in parallel, the control plane removes the pod from
+          # the Service's endpoints. Sleeping first gives kube-proxy time to
+          # stop routing NEW requests here before the app receives SIGTERM
+          # and drains in-flight ones.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "5"]
+          resources:
+            requests:            # what the scheduler reserves; HPA % is relative to this
+              cpu: 100m
+              memory: 128Mi
+            limits:              # hard ceiling: CPU is throttled, memory over-use is OOM-killed
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        # Writable scratch space, since the root filesystem is read-only.
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  labels:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/component: api-gateway
+spec:
+  # ClusterIP = reachable only inside the cluster, at gateway:8080 (or
+  # gateway.sentinelcloud.svc.cluster.local). kube-proxy load-balances each new
+  # connection across every READY pod matching the selector.
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: gateway
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: gateway
+  labels:
+    app.kubernetes.io/name: gateway
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: gateway
+  minReplicas: 1
+  maxReplicas: 5
+  # Utilization is measured against the container's resource REQUEST
+  # (not its limit) — e.g. 70% of a 100m request = 70m average CPU.
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0 # react to load spikes immediately
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 30 # add at most 2 pods every 30s
+    scaleDown:
+      stabilizationWindowSeconds: 120 # wait 2 min of low load before removing pods
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60 # remove at most 1 pod per minute

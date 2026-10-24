@@ -1,0 +1,525 @@
+name: sentinelcloud
+
+# =========================================================================
+# Phase 12 security defaults
+#  - Secrets come only from .env (generate it: ./scripts/generate-secrets.sh
+#    compose). `${VAR:?…}` makes Compose refuse to start if one is missing.
+#  - The eight application services publish NO host ports: the gateway
+#    (:8080) is the only way in, so its path guard, auth, role checks, rate
+#    limits and audit log can't be bypassed. (Debugging one service? Use
+#    `docker compose exec <service> wget -qO- localhost:<port>/health`.)
+#  - Every published port binds to ${BIND_ADDRESS:-127.0.0.1}: reachable from
+#    this computer only, not from the whole Wi-Fi/LAN. Set BIND_ADDRESS=0.0.0.0
+#    in .env only if you really need access from another device.
+#  - Every container: no-new-privileges and no Linux capabilities beyond
+#    what it needs (none for the app services).
+# =========================================================================
+x-hardening: &hardening
+  security_opt:
+    - no-new-privileges:true
+  cap_drop: [ALL]
+
+# Postgres/Redis/RabbitMQ entrypoints start as root only to fix data-dir
+# ownership, then drop to their own user — these five capabilities cover that.
+x-datastore-hardening: &datastore-hardening
+  security_opt:
+    - no-new-privileges:true
+  cap_drop: [ALL]
+  cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+
+networks:
+  sentinelcloud-net:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  redis-data:
+  rabbitmq-data:
+  grafana-data:
+  prometheus-data:
+
+services:
+  # =======================================================================
+  # Infrastructure
+  # =======================================================================
+  postgres:
+    # Same image as Kubernetes: no migration uses PostGIS.
+    image: postgres:16-alpine
+    container_name: sentinelcloud-postgres
+    # Default max_connections (100) is below what the services' pools can open.
+    command: ["postgres", "-c", "max_connections=250"]
+    restart: unless-stopped
+    <<: *datastore-hardening
+    environment:
+      # The superuser is used ONLY by the init script below.
+      POSTGRES_USER: ${POSTGRES_USER:-sentinel}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is missing — run ./scripts/generate-secrets.sh compose}
+      # Phase 12: one database AND one login role per service, "db:user:PASSWORD_VAR"
+      # (infrastructure/postgres-init/init-multiple-databases.sh).
+      POSTGRES_SERVICE_DATABASES: auth_db:auth_svc:AUTH_DB_PASSWORD,hospital_db:hospital_svc:HOSPITAL_DB_PASSWORD,ambulance_db:ambulance_svc:AMBULANCE_DB_PASSWORD,blood_db:blood_bank_svc:BLOOD_BANK_DB_PASSWORD,power_db:power_svc:POWER_DB_PASSWORD,disaster_db:disaster_svc:DISASTER_DB_PASSWORD,response_db:response_svc:RESPONSE_DB_PASSWORD
+      AUTH_DB_PASSWORD: ${AUTH_DB_PASSWORD:?AUTH_DB_PASSWORD is missing — run ./scripts/generate-secrets.sh compose}
+      HOSPITAL_DB_PASSWORD: ${HOSPITAL_DB_PASSWORD:?HOSPITAL_DB_PASSWORD is missing — run ./scripts/generate-secrets.sh compose}
+      AMBULANCE_DB_PASSWORD: ${AMBULANCE_DB_PASSWORD:?AMBULANCE_DB_PASSWORD is missing — run ./scripts/generate-secrets.sh compose}
+      BLOOD_BANK_DB_PASSWORD: ${BLOOD_BANK_DB_PASSWORD:?BLOOD_BANK_DB_PASSWORD is missing — run ./scripts/generate-secrets.sh compose}
+      POWER_DB_PASSWORD: ${POWER_DB_PASSWORD:?POWER_DB_PASSWORD is missing — run ./scripts/generate-secrets.sh compose}
+      DISASTER_DB_PASSWORD: ${DISASTER_DB_PASSWORD:?DISASTER_DB_PASSWORD is missing — run ./scripts/generate-secrets.sh compose}
+      RESPONSE_DB_PASSWORD: ${RESPONSE_DB_PASSWORD:?RESPONSE_DB_PASSWORD is missing — run ./scripts/generate-secrets.sh compose}
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infrastructure/postgres-init:/docker-entrypoint-initdb.d
+      # Phase 15: re-runs the (idempotent) setup on every start, so a database
+      # added later (response_db) also appears on an existing volume.
+      - ./k8s/base/config/postgres-ensure-databases.sh:/opt/sentinelcloud/postgres-ensure-databases.sh:ro
+    post_start:
+      - command: ["sh", "/opt/sentinelcloud/postgres-ensure-databases.sh"]
+    healthcheck:
+      # TCP, not the Unix socket: during first-time init the entrypoint runs a
+      # temporary socket-only server, and a socket check would report the
+      # database ready while it is still about to restart.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $$POSTGRES_USER -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks: [sentinelcloud-net]
+
+  redis:
+    image: redis:7-alpine
+    container_name: sentinelcloud-redis
+    restart: unless-stopped
+    <<: *datastore-hardening
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:6379:6379"
+    # Phase 12: password required; CONFIG/DEBUG (file-writing tricks) disabled.
+    # Engineering review: --appendonly + a volume, like Kubernetes, so the
+    # live feed's recent-event history survives a container restart.
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?REDIS_PASSWORD is missing — run ./scripts/generate-secrets.sh compose}", "--rename-command", "CONFIG", "", "--rename-command", "DEBUG", ""]
+    volumes:
+      - redis-data:/data
+    environment:
+      REDISCLI_AUTH: ${REDIS_PASSWORD}   # lets the healthcheck's redis-cli log in
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [sentinelcloud-net]
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: sentinelcloud-rabbitmq
+    restart: unless-stopped
+    <<: *datastore-hardening
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-sentinel}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS is missing — run ./scripts/generate-secrets.sh compose}
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:5672:5672"
+      - "${BIND_ADDRESS:-127.0.0.1}:15672:15672" # management UI: http://localhost:15672
+      - "${BIND_ADDRESS:-127.0.0.1}:15692:15692" # Prometheus metrics (Phase 10): http://localhost:15692/metrics
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+      # Phase 10: enable the management UI AND the rabbitmq_prometheus plugin
+      # explicitly (same file the Kubernetes ConfigMap is generated from).
+      - ./k8s/base/monitoring/config/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
+      # Phase 14: the dead-letter policy script (Kubernetes runs the same file
+      # as the StatefulSet's postStart hook).
+      - ./k8s/base/config/rabbitmq-set-policies.sh:/opt/sentinelcloud/rabbitmq-set-policies.sh:ro
+    # Phase 14: once the broker is up, failed messages on the six durable
+    # queues are dead-lettered instead of dropped (needs Compose 2.30+).
+    post_start:
+      - command: ["sh", "/opt/sentinelcloud/rabbitmq-set-policies.sh"]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [sentinelcloud-net]
+
+  # =======================================================================
+  # Monitoring
+  # =======================================================================
+  # Phase 10: Prometheus + Alertmanager + Grafana. Rules, alerting config,
+  # datasources and dashboards are bind-mounted from k8s/base/monitoring/
+  # config/ — the SAME files Kubernetes loads into ConfigMaps — so both
+  # deployment paths always monitor identically. Only the scrape config
+  # differs (static targets here, service discovery in Kubernetes).
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: sentinelcloud-prometheus
+    restart: unless-stopped
+    <<: *hardening
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=3d
+      - --web.enable-lifecycle
+    volumes:
+      - ./infrastructure/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./k8s/base/monitoring/config/prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${PROMETHEUS_PORT:-9090}:9090"
+    depends_on:
+      - alertmanager
+    networks: [sentinelcloud-net]
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: sentinelcloud-alertmanager
+    restart: unless-stopped
+    <<: *hardening
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    volumes:
+      - ./k8s/base/monitoring/config/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${ALERTMANAGER_PORT:-9093}:9093"
+    networks: [sentinelcloud-net]
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: sentinelcloud-grafana
+    restart: unless-stopped
+    <<: *hardening
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      # Phase 12: no admin/admin fallback.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD is missing — run ./scripts/generate-secrets.sh compose}
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/sentinelcloud/system-health.json
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./k8s/base/monitoring/config/grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - ./k8s/base/monitoring/config/grafana/dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
+      - ./k8s/base/monitoring/config/grafana/dashboards:/var/lib/grafana/dashboards/sentinelcloud:ro
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${GRAFANA_PORT:-3000}:3000"
+    depends_on:
+      - prometheus
+    networks: [sentinelcloud-net]
+
+  # =======================================================================
+  # Core microservices
+  # =======================================================================
+  auth-service:
+    build: ./services/auth-service
+    container_name: sentinelcloud-auth-service
+    restart: unless-stopped
+    <<: *hardening
+    environment:
+      PORT: 8081
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: auth_svc          # Phase 12: its own database user, not the superuser
+      DB_PASSWORD: ${AUTH_DB_PASSWORD:?AUTH_DB_PASSWORD is missing — run ./scripts/generate-secrets.sh compose}
+      DB_NAME: auth_db
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?JWT_ACCESS_SECRET is missing — run ./scripts/generate-secrets.sh compose}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?JWT_REFRESH_SECRET is missing — run ./scripts/generate-secrets.sh compose}
+      JWT_ACCESS_EXPIRES_IN: ${JWT_ACCESS_EXPIRES_IN:-15m}
+      JWT_REFRESH_EXPIRES_IN: ${JWT_REFRESH_EXPIRES_IN:-7d}
+      BCRYPT_SALT_ROUNDS: ${BCRYPT_SALT_ROUNDS:-12}
+      DEFAULT_ADMIN_EMAIL: ${DEFAULT_ADMIN_EMAIL}
+      DEFAULT_ADMIN_PASSWORD: ${DEFAULT_ADMIN_PASSWORD}
+      DEFAULT_ADMIN_NAME: ${DEFAULT_ADMIN_NAME:-SentinelCloud System Administrator}
+      # Phase 16: the simulator's service account (seeded and kept in sync on start).
+      SIMULATOR_EMAIL: ${SIMULATOR_EMAIL:-simulator@sentinelcloud.local}
+      SIMULATOR_PASSWORD: ${SIMULATOR_PASSWORD:?SIMULATOR_PASSWORD is missing — run ./scripts/generate-secrets.sh compose}
+      # Phase 12: refresh-token cookie. Local Compose is plain HTTP, so not "Secure".
+      COOKIE_SECURE: "false"
+      TRUST_PROXY_HOPS: "1"   # the gateway sets X-Forwarded-For
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [sentinelcloud-net]
+
+  hospital-service:
+    build: ./services/hospital-service
+    container_name: sentinelcloud-hospital-service
+    restart: unless-stopped
+    <<: *hardening
+    environment:
+      PORT: 8082
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: hospital_svc          # Phase 12: its own database user, not the superuser
+      DB_PASSWORD: ${HOSPITAL_DB_PASSWORD:?HOSPITAL_DB_PASSWORD is missing — run ./scripts/generate-secrets.sh compose}
+      DB_NAME: hospital_db
+      RABBITMQ_URL: amqp://${RABBITMQ_DEFAULT_USER:-sentinel}:${RABBITMQ_DEFAULT_PASS}@rabbitmq:5672
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?JWT_ACCESS_SECRET is missing — run ./scripts/generate-secrets.sh compose}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks: [sentinelcloud-net]
+
+  ambulance-service:
+    build: ./services/ambulance-service
+    container_name: sentinelcloud-ambulance-service
+    restart: unless-stopped
+    <<: *hardening
+    environment:
+      PORT: 8083
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: ambulance_svc          # Phase 12: its own database user, not the superuser
+      DB_PASSWORD: ${AMBULANCE_DB_PASSWORD:?AMBULANCE_DB_PASSWORD is missing — run ./scripts/generate-secrets.sh compose}
+      DB_NAME: ambulance_db
+      RABBITMQ_URL: amqp://${RABBITMQ_DEFAULT_USER:-sentinel}:${RABBITMQ_DEFAULT_PASS}@rabbitmq:5672
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?JWT_ACCESS_SECRET is missing — run ./scripts/generate-secrets.sh compose}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks: [sentinelcloud-net]
+
+  blood-bank-service:
+    build: ./services/blood-bank-service
+    container_name: sentinelcloud-blood-bank-service
+    restart: unless-stopped
+    <<: *hardening
+    environment:
+      PORT: 8084
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: blood_bank_svc          # Phase 12: its own database user, not the superuser
+      DB_PASSWORD: ${BLOOD_BANK_DB_PASSWORD:?BLOOD_BANK_DB_PASSWORD is missing — run ./scripts/generate-secrets.sh compose}
+      DB_NAME: blood_db
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: ${RABBITMQ_DEFAULT_USER:-sentinel}
+      RABBITMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS}
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?JWT_ACCESS_SECRET is missing — run ./scripts/generate-secrets.sh compose}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks: [sentinelcloud-net]
+
+  power-service:
+    build: ./services/power-service
+    container_name: sentinelcloud-power-service
+    restart: unless-stopped
+    <<: *hardening
+    environment:
+      PORT: 8085
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: power_svc          # Phase 12: its own database user, not the superuser
+      DB_PASSWORD: ${POWER_DB_PASSWORD:?POWER_DB_PASSWORD is missing — run ./scripts/generate-secrets.sh compose}
+      DB_NAME: power_db
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: ${RABBITMQ_DEFAULT_USER:-sentinel}
+      RABBITMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS}
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?JWT_ACCESS_SECRET is missing — run ./scripts/generate-secrets.sh compose}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks: [sentinelcloud-net]
+
+  disaster-service:
+    build: ./services/disaster-service
+    container_name: sentinelcloud-disaster-service
+    restart: unless-stopped
+    <<: *hardening
+    environment:
+      PORT: 8086
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: disaster_svc          # Phase 12: its own database user, not the superuser
+      DB_PASSWORD: ${DISASTER_DB_PASSWORD:?DISASTER_DB_PASSWORD is missing — run ./scripts/generate-secrets.sh compose}
+      DB_NAME: disaster_db
+      RABBITMQ_URL: amqp://${RABBITMQ_DEFAULT_USER:-sentinel}:${RABBITMQ_DEFAULT_PASS}@rabbitmq:5672
+      # Phase 9 fix: src/middleware/auth.js refuses to start without it
+      # (it independently re-verifies access tokens, like every other
+      # domain service) — it was missing from this block before.
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?JWT_ACCESS_SECRET is missing — run ./scripts/generate-secrets.sh compose}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks: [sentinelcloud-net]
+
+  notification-service:
+    build: ./services/notification-service
+    container_name: sentinelcloud-notification-service
+    restart: unless-stopped
+    <<: *hardening
+    environment:
+      PORT: 8087
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is missing — run ./scripts/generate-secrets.sh compose}
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?JWT_ACCESS_SECRET is missing — run ./scripts/generate-secrets.sh compose}
+      RABBITMQ_URL: amqp://${RABBITMQ_DEFAULT_USER:-sentinel}:${RABBITMQ_DEFAULT_PASS}@rabbitmq:5672
+    depends_on:
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks: [sentinelcloud-net]
+
+  # Phase 11: Resilience Demo control plane. Under Compose it starts but
+  # reports drills as UNAVAILABLE: the drills demonstrate Kubernetes
+  # self-healing (probes, restarts, replica recovery, autoscaling), and
+  # Compose has no orchestrator to do any of that, which is the point.
+  resilience-service:
+    build: ./services/resilience-service
+    container_name: sentinelcloud-resilience-service
+    restart: unless-stopped
+    <<: *hardening
+    environment:
+      PORT: 8088
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?JWT_ACCESS_SECRET is missing — run ./scripts/generate-secrets.sh compose}
+      RABBITMQ_MGMT_URL: http://rabbitmq:15672
+      RABBITMQ_USER: ${RABBITMQ_DEFAULT_USER:-sentinel}
+      RABBITMQ_PASSWORD: ${RABBITMQ_DEFAULT_PASS}
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks: [sentinelcloud-net]
+
+  # Phase 15: the automated response engine (docs/PHASE-15-RESPONSE-ENGINE.md).
+  response-service:
+    build: ./services/response-service
+    container_name: sentinelcloud-response-service
+    restart: unless-stopped
+    <<: *hardening
+    environment:
+      PORT: 8089
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: response_svc          # its own database user, not the superuser
+      DB_PASSWORD: ${RESPONSE_DB_PASSWORD:?RESPONSE_DB_PASSWORD is missing — run ./scripts/generate-secrets.sh compose}
+      DB_NAME: response_db
+      RABBITMQ_URL: amqp://${RABBITMQ_DEFAULT_USER:-sentinel}:${RABBITMQ_DEFAULT_PASS}@rabbitmq:5672
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?JWT_ACCESS_SECRET is missing — run ./scripts/generate-secrets.sh compose}
+      # "true" executes every plan as soon as it is proposed. Default: an operator approves.
+      RESPONSE_AUTO_APPROVE: ${RESPONSE_AUTO_APPROVE:-false}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks: [sentinelcloud-net]
+
+  # Phase 16: the scenario simulator (docs/PHASE-16-SIMULATOR.md). Talks to
+  # the gateway only, with its own service account.
+  simulator-service:
+    build: ./services/simulator-service
+    container_name: sentinelcloud-simulator-service
+    restart: unless-stopped
+    <<: *hardening
+    environment:
+      PORT: 8090
+      GATEWAY_URL: http://gateway:8080/api/v1
+      SIMULATOR_EMAIL: ${SIMULATOR_EMAIL:-simulator@sentinelcloud.local}
+      SIMULATOR_PASSWORD: ${SIMULATOR_PASSWORD:?SIMULATOR_PASSWORD is missing — run ./scripts/generate-secrets.sh compose}
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?JWT_ACCESS_SECRET is missing — run ./scripts/generate-secrets.sh compose}
+    networks: [sentinelcloud-net]
+
+  # =======================================================================
+  # API Gateway — single ingress; started after the domain services so
+  # its first /health/services poll has something to actually reach.
+  # =======================================================================
+  gateway:
+    build: ./services/gateway
+    container_name: sentinelcloud-gateway
+    restart: unless-stopped
+    <<: *hardening
+    environment:
+      PORT: 8080
+      RABBITMQ_URL: amqp://${RABBITMQ_DEFAULT_USER:-sentinel}:${RABBITMQ_DEFAULT_PASS}@rabbitmq:5672
+      # Shared with auth-service so the gateway can verify access tokens
+      # locally (stateless JWT check) instead of calling auth-service on
+      # every single proxied request — see services/gateway/src/middleware/auth.js
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?JWT_ACCESS_SECRET is missing — run ./scripts/generate-secrets.sh compose}
+      AUTH_SERVICE_URL: http://auth-service:8081
+      HOSPITAL_SERVICE_URL: http://hospital-service:8082
+      AMBULANCE_SERVICE_URL: http://ambulance-service:8083
+      BLOOD_BANK_SERVICE_URL: http://blood-bank-service:8084
+      POWER_SERVICE_URL: http://power-service:8085
+      DISASTER_SERVICE_URL: http://disaster-service:8086
+      NOTIFICATION_SERVICE_WS_URL: ws://notification-service:8087
+      NOTIFICATION_SERVICE_URL: http://notification-service:8087
+      RESILIENCE_SERVICE_URL: http://resilience-service:8088
+      RESPONSE_SERVICE_URL: http://response-service:8089
+      SIMULATOR_SERVICE_URL: http://simulator-service:8090
+      # ---- Phase 12 ----
+      # Browsers talk to the gateway directly here (no nginx in front), so
+      # NO X-Forwarded-For hop is trusted: a client can't spoof its IP.
+      TRUST_PROXY_HOPS: "0"
+      # The Vite dev server's origin (cross-origin to the gateway on :8080).
+      CORS_ALLOWED_ORIGINS: http://localhost:${FRONTEND_PORT:-5173}
+      RATE_LIMIT_API_PER_MINUTE: ${RATE_LIMIT_API_PER_MINUTE:-600}
+      RATE_LIMIT_WRITES_PER_MINUTE: ${RATE_LIMIT_WRITES_PER_MINUTE:-60}
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${GATEWAY_PORT:-8080}:8080"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      auth-service:
+        condition: service_started
+      hospital-service:
+        condition: service_started
+      ambulance-service:
+        condition: service_started
+      blood-bank-service:
+        condition: service_started
+      power-service:
+        condition: service_started
+      disaster-service:
+        condition: service_started
+      notification-service:
+        condition: service_started
+      response-service:
+        condition: service_started
+      simulator-service:
+        condition: service_started
+    networks: [sentinelcloud-net]
+
+  # =======================================================================
+  # Frontend
+  # =======================================================================
+  frontend:
+    # Dev image (Vite dev server, hot reload). Kubernetes uses the
+    # production nginx image from frontend/Dockerfile instead — Phase 9.
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: sentinelcloud-frontend
+    restart: unless-stopped
+    <<: *hardening
+    environment:
+      # The live-feed WebSocket URL is derived from this (lib/api.js
+      # getLiveFeedUrl), so there is no separate VITE_WS_URL.
+      VITE_API_BASE_URL: http://localhost:${GATEWAY_PORT:-8080}/api/v1
+      # Basemap tile key for the live maps (empty = watermarked tiles).
+      VITE_CARTO_BASEMAP_KEY: ${CARTO_BASEMAP_KEY:-}
+      # Hot reload through the bind mount on Docker Desktop (see vite.config.js).
+      VITE_USE_POLLING: "true"
+    # Hot reload: the source is mounted read-only over the copy baked into
+    # the image, so edits on the host show up without a rebuild.
+    volumes:
+      - ./frontend/src:/app/src:ro
+      - ./frontend/index.html:/app/index.html:ro
+      - ./frontend/public:/app/public:ro
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${FRONTEND_PORT:-5173}:5173"
+    depends_on:
+      - gateway
+    networks: [sentinelcloud-net]

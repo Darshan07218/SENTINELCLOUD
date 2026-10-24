@@ -1,0 +1,145 @@
+server:
+  # Phase 12 (explicit, matching Spring defaults): error responses never
+  # carry stack traces or exception messages.
+  error:
+    include-stacktrace: never
+    include-message: never
+    include-exception: false
+  port: ${PORT:8084}
+  # Phase 9: on SIGTERM (Kubernetes scale-down / rolling update), stop
+  # accepting new requests and let in-flight ones finish before the JVM
+  # exits, instead of cutting them off mid-response.
+  shutdown: graceful
+
+spring:
+  lifecycle:
+    # Upper bound on the graceful drain above — kept well inside the
+    # pod's terminationGracePeriodSeconds (30s) so the kubelet never
+    # has to SIGKILL a JVM that is still shutting down cleanly.
+    timeout-per-shutdown-phase: 20s
+  application:
+    name: blood-bank-service
+
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:postgres}:${DB_PORT:5432}/${DB_NAME:blood_db}
+    # Phase 12: no default credentials — each service has its own database
+    # user and password, injected from .env / the Kubernetes Secret.
+    username: ${DB_USER}
+    password: ${DB_PASSWORD}
+    hikari:
+      connection-timeout: 5000
+      # Engineering review: 8 services x replicas x pool size must stay
+      # under Postgres max_connections (raised to 250 in Compose/K8s).
+      # 5 is plenty for this service's request rate.
+      maximum-pool-size: 5
+      minimum-idle: 2
+
+  jpa:
+    # Phase 5: schema is now owned entirely by Flyway (see
+    # src/main/resources/db/migration/) — ddl-auto stays "none" so
+    # Hibernate never tries to auto-generate or alter the schema itself;
+    # it only maps entities onto tables Flyway already created.
+    hibernate:
+      ddl-auto: none
+    show-sql: false
+    open-in-view: false
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    # Engineering review: false. With true, Flyway "baselines" a database
+    # that has tables but no history table at V1 and then SKIPS V1 — on a
+    # wrongly pointed DB_NAME that silently runs against the wrong schema.
+    # Each service owns a fresh, dedicated database, so nothing to baseline.
+    baseline-on-migrate: false
+
+  rabbitmq:
+    host: ${RABBITMQ_HOST:rabbitmq}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USER}
+    password: ${RABBITMQ_PASSWORD}
+    # Fail fast is off so the app doesn't crash-loop if RabbitMQ takes a
+    # few extra seconds to accept connections during `docker compose up`.
+    connection-timeout: 5000
+    # Phase 14: wait for RabbitMQ to confirm each publish (EventPublisher
+    # throws if it doesn't), like the Node services' confirm channels.
+    publisher-confirm-type: correlated
+    # Phase 12: a message the listener can't process is never requeued
+    # forever — one malformed or forged event used to be able to loop through
+    # the consumer endlessly. Phase 14: it is retried in place 3 times
+    # (1 s, 2 s, 4 s), then rejected; the queue's "sentinel-dead-letter"
+    # policy moves it to q.dead-letters instead of dropping it.
+    listener:
+      simple:
+        default-requeue-rejected: false
+        retry:
+          enabled: true
+          max-attempts: 4
+          initial-interval: 1s
+          multiplier: 2
+          max-interval: 4s
+
+# Shared with auth-service and every other service that independently
+# re-verifies access tokens (see security/JwtService.java) — must be
+# the exact same value as JWT_ACCESS_SECRET everywhere else.
+# Phase 11: Resilience Demo fault injection (see chaos/ChaosController.java).
+sentinel:
+  chaos:
+    enabled: ${CHAOS_ENABLED:false}
+    token: ${CHAOS_TOKEN:}
+
+security:
+  jwt:
+    access-secret: ${JWT_ACCESS_SECRET}
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+  api-docs:
+    path: /v3/api-docs
+
+management:
+  # Phase 10: explicit latency buckets for the http_server_requests_seconds
+  # histogram — IDENTICAL to HTTP_LATENCY_BUCKETS in the Node services'
+  # src/metrics.js, so histogram_quantile() works across all eight services
+  # with one query. (Whole milliseconds: Spring's duration parser takes
+  # integers only, so 2.5s is written 2500ms.)
+  metrics:
+    distribution:
+      slo:
+        http.server.requests: 5ms,10ms,25ms,50ms,100ms,250ms,500ms,1000ms,2500ms,5000ms,10000ms
+  endpoints:
+    web:
+      base-path: /
+      exposure:
+        include: health, prometheus, info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      # Phase 12: health is unauthenticated, so it reports UP/DOWN only — no
+      # database version, disk paths or broker details for anyone who asks.
+      show-details: never
+      # Phase 9: Kubernetes readiness probe (/health/readiness) also
+      # requires the database. Liveness (/health/liveness) deliberately
+      # does NOT — a Postgres outage should take pods out of the
+      # Service's endpoints, not trigger a restart storm of JVMs that
+      # are themselves perfectly healthy. RabbitMQ is excluded from both:
+      # event publishing is best-effort here (same as hospital-service).
+      group:
+        readiness:
+          include: readinessState, db
+  health:
+    readinessstate:
+      enabled: true
+    livenessstate:
+      enabled: true
+    rabbit:
+      enabled: true
+    db:
+      enabled: true
+
+logging:
+  level:
+    root: INFO
+    com.sentinelcloud: INFO

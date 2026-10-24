@@ -1,0 +1,217 @@
+# =========================================================================
+# PostgreSQL — one instance, one database per microservice (same layout
+# as docker-compose.yml; the init script creates auth_db, hospital_db,
+# ambulance_db, blood_db, power_db and disaster_db on first start).
+#
+# Why a StatefulSet (not a Deployment):
+#   - stable pod name/hostname (postgres-0) and stable network identity
+#   - volumeClaimTemplates give the pod its OWN PersistentVolumeClaim,
+#     which follows the pod across restarts and rescheduling. Deleting
+#     the pod (or the whole StatefulSet) does NOT delete the data; only
+#     deleting the PVC does.
+#   - ordered, one-at-a-time rollout — never two Postgres processes
+#     writing the same data directory.
+#
+# Why one shared instance: a laptop-sized cluster (Minikube/Kind) can't
+# comfortably run six Postgres servers. Isolation is still enforced at
+# the database + connection level: each service only ever receives its
+# own DB_NAME. Splitting a service onto its own instance later is a
+# config change (its DB_HOST), not a code change.
+#
+# Replicas stay at 1: plain Postgres is single-writer. Scaling it out
+# needs a replication-aware operator (e.g. CloudNativePG), out of scope.
+# =========================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/component: database
+spec:
+  # Headless: DNS "postgres" resolves straight to the pod IP. Required as
+  # the StatefulSet's governing Service (spec.serviceName below), and
+  # gives the pod the stable name postgres-0.postgres.
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/component: database
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres
+        app.kubernetes.io/component: database
+    spec:
+      automountServiceAccountToken: false
+      # Don't inject Docker-link-style env vars (GATEWAY_PORT=tcp://…,
+      # REDIS_PORT=tcp://… etc.) for every Service in the namespace — they
+      # can silently collide with real settings like REDIS_PORT/RABBITMQ_PORT.
+      # Services are found via DNS instead.
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 60 # let Postgres finish a clean shutdown checkpoint
+      containers:
+        - name: postgres
+          # No migration uses PostGIS (only pgcrypto + citext, bundled with
+          # stock Postgres), so Compose and Kubernetes both use the official image.
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          # Engineering review: the default max_connections (100) is below
+          # what the services' pools can open once anything is scaled
+          # (8 services x replicas x pool size). The image entrypoint turns
+          # leading "-c" args into `postgres -c ...`.
+          args: ["-c", "max_connections=250"]
+          # Phase 12: the image's entrypoint starts as root only to fix the
+          # data directory's ownership, then drops to the "postgres" user.
+          # Everything else is removed: no privilege escalation, the default
+          # seccomp profile, and only the five capabilities that first step needs.
+          securityContext:
+            allowPrivilegeEscalation: false
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN", "DAC_OVERRIDE", "FOWNER", "SETGID", "SETUID"]
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelcloud-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelcloud-secrets
+                  key: POSTGRES_PASSWORD
+            # Phase 12: one database AND one login role per service
+            # ("database:user:PASSWORD_VAR"), see config/init-multiple-databases.sh.
+            # Engineering review: set here, not in the shared ConfigMap that
+            # every pod loads with envFrom — only Postgres needs the map.
+            - name: POSTGRES_SERVICE_DATABASES
+              value: "auth_db:auth_svc:AUTH_DB_PASSWORD,hospital_db:hospital_svc:HOSPITAL_DB_PASSWORD,ambulance_db:ambulance_svc:AMBULANCE_DB_PASSWORD,blood_db:blood_bank_svc:BLOOD_BANK_DB_PASSWORD,power_db:power_svc:POWER_DB_PASSWORD,disaster_db:disaster_svc:DISASTER_DB_PASSWORD,response_db:response_svc:RESPONSE_DB_PASSWORD"
+            - name: AUTH_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelcloud-secrets
+                  key: AUTH_DB_PASSWORD
+            - name: HOSPITAL_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelcloud-secrets
+                  key: HOSPITAL_DB_PASSWORD
+            - name: AMBULANCE_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelcloud-secrets
+                  key: AMBULANCE_DB_PASSWORD
+            - name: BLOOD_BANK_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelcloud-secrets
+                  key: BLOOD_BANK_DB_PASSWORD
+            - name: POWER_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelcloud-secrets
+                  key: POWER_DB_PASSWORD
+            - name: DISASTER_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelcloud-secrets
+                  key: DISASTER_DB_PASSWORD
+            # Phase 15: response-service's database.
+            - name: RESPONSE_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelcloud-secrets
+                  key: RESPONSE_DB_PASSWORD
+            # A subdirectory of the mount, because some volume provisioners
+            # put a lost+found directory at the volume root and initdb
+            # refuses to initialise a non-empty directory.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: init-scripts
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+            - name: scripts
+              mountPath: /opt/sentinelcloud
+              readOnly: true
+          # Phase 15: re-run the (idempotent) database/role setup on every start,
+          # so a service database added later (response_db) also appears on an
+          # existing data volume. Always exits 0; see config/postgres-ensure-databases.sh.
+          lifecycle:
+            postStart:
+              exec:
+                command: ["sh", "/opt/sentinelcloud/postgres-ensure-databases.sh"]
+          # Probes connect over TCP (-h 127.0.0.1) on purpose: while the
+          # image's entrypoint is running init scripts, it runs a temporary
+          # server that listens on the Unix socket ONLY. A socket check
+          # would report "ready" during initialisation and let services
+          # connect to a server that is about to restart.
+          startupProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -h 127.0.0.1 -p 5432"]
+            periodSeconds: 5
+            failureThreshold: 36 # up to 3 minutes for first-time initdb
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -h 127.0.0.1 -p 5432"]
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -h 127.0.0.1 -p 5432"]
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 4
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+      volumes:
+        - name: init-scripts
+          configMap:
+            name: postgres-init
+            defaultMode: 0755
+        - name: scripts
+          configMap:
+            name: postgres-scripts
+  # One PVC per pod, named data-postgres-0. No storageClassName → the
+  # cluster's default StorageClass provisions the PersistentVolume
+  # dynamically ("standard" on both Minikube and Kind).
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/name: postgres
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi

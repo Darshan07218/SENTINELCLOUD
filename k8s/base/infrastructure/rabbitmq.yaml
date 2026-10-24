@@ -1,0 +1,186 @@
+# =========================================================================
+# RabbitMQ — the event bus (topic exchange "sentinelcloud.events").
+# SentinelCloud is built on RabbitMQ (amqplib in the Node services,
+# Spring AMQP in the Java ones), so that is what runs here; there is no
+# Kafka dependency anywhere in the codebase.
+#
+# StatefulSet + PersistentVolumeClaim because durable queues and
+# persistent messages (every publisher sets persistent: true) live in
+# /var/lib/rabbitmq. Without a volume, a RabbitMQ pod restart would lose
+# every queued-but-unconsumed event. The stable pod hostname
+# (rabbitmq-0) matters too: RabbitMQ names its data directory after its
+# node name (rabbit@<hostname>), so a changing hostname would orphan it.
+# =========================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rabbitmq-config
+  labels:
+    app.kubernetes.io/name: rabbitmq
+data:
+  # Dropped into /etc/rabbitmq/conf.d/ next to the image's defaults.
+  20-sentinelcloud.conf: |
+    # Block publishers at an absolute memory figure that sits safely
+    # inside the container's 768Mi limit, instead of a fraction of the
+    # NODE's RAM (which could exceed the limit and get the pod OOM-killed).
+    vm_memory_high_watermark.absolute = 400MiB
+    # Don't block publishers until the disk is nearly full (small dev PVC).
+    disk_free_limit.absolute = 50MB
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq
+  labels:
+    app.kubernetes.io/name: rabbitmq
+    app.kubernetes.io/component: message-broker
+spec:
+  clusterIP: None # headless governing Service for the StatefulSet
+  selector:
+    app.kubernetes.io/name: rabbitmq
+  ports:
+    - name: amqp
+      port: 5672
+      targetPort: amqp
+    - name: management
+      port: 15672
+      targetPort: management
+    # Phase 10: rabbitmq_prometheus plugin (scraped by Prometheus jobs
+    # "rabbitmq" and "rabbitmq-queues").
+    - name: prometheus
+      port: 15692
+      targetPort: prometheus
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: rabbitmq
+  labels:
+    app.kubernetes.io/name: rabbitmq
+    app.kubernetes.io/component: message-broker
+spec:
+  serviceName: rabbitmq
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rabbitmq
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rabbitmq
+        app.kubernetes.io/component: message-broker
+    spec:
+      automountServiceAccountToken: false
+      # Don't inject Docker-link-style env vars (GATEWAY_PORT=tcp://…,
+      # REDIS_PORT=tcp://… etc.) for every Service in the namespace — they
+      # can silently collide with real settings like REDIS_PORT/RABBITMQ_PORT.
+      # Services are found via DNS instead.
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        fsGroup: 999 # the image's rabbitmq user/group — makes the PVC writable for it
+      containers:
+        - name: rabbitmq
+          image: rabbitmq:3.13-management-alpine
+          imagePullPolicy: IfNotPresent
+          # Phase 12: as for Postgres/Redis — the entrypoint only needs root to
+          # fix file ownership before dropping to the "rabbitmq" user.
+          securityContext:
+            allowPrivilegeEscalation: false
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN", "DAC_OVERRIDE", "FOWNER", "SETGID", "SETUID"]
+          env:
+            - name: RABBITMQ_DEFAULT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelcloud-secrets
+                  key: RABBITMQ_USER
+            - name: RABBITMQ_DEFAULT_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelcloud-secrets
+                  key: RABBITMQ_PASSWORD
+          ports:
+            - name: amqp
+              containerPort: 5672
+            - name: management
+              containerPort: 15672
+            - name: prometheus
+              containerPort: 15692
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/rabbitmq
+            - name: config
+              mountPath: /etc/rabbitmq/conf.d/20-sentinelcloud.conf
+              subPath: 20-sentinelcloud.conf
+              readOnly: true
+            # Phase 10: explicitly enable the management UI AND the
+            # Prometheus metrics plugin (port 15692), rather than relying on
+            # whatever the image happens to enable by default.
+            - name: plugins
+              mountPath: /etc/rabbitmq/enabled_plugins
+              subPath: enabled_plugins
+              readOnly: true
+            - name: scripts
+              mountPath: /opt/sentinelcloud
+              readOnly: true
+          # Phase 14: once the broker is up, apply the dead-letter policy
+          # (config/rabbitmq-set-policies.sh). Kubernetes starts the probes
+          # only after this hook returns, so Ready also means "policy set".
+          # The script always exits 0: a failed hook would kill the broker.
+          lifecycle:
+            postStart:
+              exec:
+                command: ["sh", "/opt/sentinelcloud/rabbitmq-set-policies.sh"]
+          # Erlang VM boot is slow on a laptop-sized node; the startup
+          # probe allows up to ~5 minutes before liveness takes over.
+          startupProbe:
+            exec:
+              command: ["rabbitmq-diagnostics", "-q", "ping"]
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 30
+          # Ready = the AMQP listener actually accepts connections (what
+          # the services need), not merely "the Erlang node is up".
+          readinessProbe:
+            exec:
+              command: ["rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command: ["rabbitmq-diagnostics", "-q", "ping"]
+            periodSeconds: 30
+            timeoutSeconds: 15
+            failureThreshold: 4
+          resources:
+            requests:
+              cpu: 200m
+              memory: 384Mi
+            limits:
+              cpu: "1"
+              memory: 768Mi
+      volumes:
+        - name: config
+          configMap:
+            name: rabbitmq-config
+        - name: plugins
+          configMap:
+            name: rabbitmq-plugins
+        - name: scripts
+          configMap:
+            name: rabbitmq-scripts
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/name: rabbitmq
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi

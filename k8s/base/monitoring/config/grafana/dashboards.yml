@@ -1,0 +1,19 @@
+# =========================================================================
+# Grafana dashboard provider — loads every JSON file in the dashboards
+# directory into a "SentinelCloud" folder at startup (Phase 10).
+#
+# allowUiUpdates: false — the JSON in git is the source of truth. You
+# can still edit a panel in the UI to experiment; to keep a change,
+# export it (Share → Export → Save to file) over the JSON file here.
+# =========================================================================
+apiVersion: 1
+
+providers:
+  - name: sentinelcloud
+    folder: SentinelCloud
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards/sentinelcloud

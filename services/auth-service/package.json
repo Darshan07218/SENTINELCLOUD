@@ -1,0 +1,30 @@
+{
+  "name": "@sentinelcloud/auth-service",
+  "version": "0.2.0",
+  "description": "SentinelCloud Auth Service — registration, login, JWT issuance/refresh, logout, RBAC (Phase 2)",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "node --test tests/*.test.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "express-rate-limit": "^7.4.0",
+    "helmet": "^7.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "morgan": "^1.10.0",
+    "pg": "^8.12.0",
+    "swagger-ui-express": "^5.0.1",
+    "yaml": "^2.5.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "pg-mem": "^2.8.1",
+    "supertest": "^7.0.0"
+  }
+}

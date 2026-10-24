@@ -1,0 +1,22 @@
+# =========================================================================
+# Phase 17: queue-based autoscaling with KEDA (docs/PHASE-17-CI-AND-KEDA.md).
+# A Kustomize *component*, so it can be added to any overlay that runs on a
+# cluster with KEDA installed (k8s/overlays/local-keda does). Without KEDA,
+# use k8s/overlays/local: CPU-based HPAs only, nothing here applied.
+# =========================================================================
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - scaledobject.yaml
+  - networkpolicy.yaml
+
+patches:
+  # KEDA creates and owns notification-service's HPA (same name, see the
+  # ScaledObject); two HPAs on one Deployment would fight over replicas.
+  - patch: |-
+      $patch: delete
+      apiVersion: autoscaling/v2
+      kind: HorizontalPodAutoscaler
+      metadata:
+        name: notification-service

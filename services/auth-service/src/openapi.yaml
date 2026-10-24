@@ -1,0 +1,242 @@
+openapi: 3.0.3
+info:
+  title: SentinelCloud Auth Service
+  version: "0.3.0"
+  description: >
+    User registration, login, JWT issuance/refresh, logout, profile and
+    (SYSTEM_ADMIN) user management. Reached through the API Gateway at
+    /api/v1/auth/* (the gateway strips the /api/v1/auth prefix before
+    forwarding). Phase 12: the service itself is no longer published on a
+    host port; the refresh token is an httpOnly cookie (sc_refresh, path
+    /api/v1/auth) and never appears in a response body.
+servers:
+  - url: http://localhost:8080/api/v1/auth
+    description: Via API Gateway (Docker Compose)
+  - url: http://localhost:30080/api/v1/auth
+    description: Via the frontend's nginx (Kubernetes)
+paths:
+  /register:
+    post:
+      summary: Register a new user (always a read-only CITIZEN; roles are granted by a SYSTEM_ADMIN)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "201":
+          description: User created (role CITIZEN)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserResponse"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "409":
+          description: Email already registered
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "429":
+          description: Rate limited (20 per 15 minutes per IP)
+  /login:
+    post:
+      summary: Log in. Returns an access token; sets the refresh token as an httpOnly cookie.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Login successful
+          headers:
+            Set-Cookie:
+              description: "sc_refresh=<token>; Path=/api/v1/auth; Max-Age=604800; HttpOnly; SameSite=Strict[; Secure]"
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenResponse"
+        "400":
+          description: Validation error
+        "401":
+          description: Invalid email or password (same answer and timing for unknown emails)
+        "429":
+          description: Rate limited per IP, or ACCOUNT_LOCKED after 10 failed attempts on this account (15 minutes)
+  /refresh:
+    post:
+      summary: Rotate the refresh token (cookie) and get a new access token
+      description: >
+        Browsers send the sc_refresh cookie automatically (fetch with
+        credentials). Non-browser clients may send {"refreshToken": "..."}
+        instead. Presenting an already-rotated token later ends every
+        session of the account (reuse detection).
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refreshToken: { type: string, description: "Only for non-browser clients" }
+      responses:
+        "200":
+          description: New access token; new refresh cookie set
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenResponse"
+        "401":
+          description: >
+            INVALID_REFRESH_TOKEN (invalid, expired, revoked or reused), or
+            REFRESH_TOKEN_ROTATED (another tab refreshed a moment ago — retry once).
+  /logout:
+    post:
+      summary: End this session (or all sessions) — identified by the refresh cookie
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                allDevices: { type: boolean, description: "true = end every session of this account" }
+                refreshToken: { type: string, description: "Only for non-browser clients" }
+      responses:
+        "204":
+          description: Logged out (the cookie is cleared)
+  /me:
+    get:
+      summary: Get the authenticated user's own profile
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Current user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserResponse"
+        "401":
+          description: Missing/invalid/expired access token
+  /users:
+    get:
+      summary: List users (SYSTEM_ADMIN)
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 25 } }
+      responses:
+        "200":
+          description: A page of users
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  users: { type: array, items: { $ref: "#/components/schemas/AdminUser" } }
+                  page: { type: integer }
+                  limit: { type: integer }
+                  total: { type: integer }
+        "403":
+          description: Not a SYSTEM_ADMIN
+  /users/{id}:
+    patch:
+      summary: Change a user's role and/or active status (SYSTEM_ADMIN). Ends that user's sessions.
+      security:
+        - bearerAuth: []
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                role: { $ref: "#/components/schemas/Role" }
+                isActive: { type: boolean }
+      responses:
+        "200":
+          description: Updated user
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: "#/components/schemas/AdminUser" }
+        "400":
+          description: Validation error, SELF_LOCKOUT (an admin can't demote/deactivate themselves) or LAST_ADMIN
+        "403":
+          description: Not a SYSTEM_ADMIN
+        "404":
+          description: No such user
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    Role:
+      type: string
+      enum: [CITIZEN, EMERGENCY_OPERATOR, HOSPITAL_ADMIN, INFRASTRUCTURE_ADMIN, SYSTEM_ADMIN]
+    RegisterRequest:
+      type: object
+      required: [email, password, fullName]
+      properties:
+        email: { type: string, format: email }
+        password:
+          type: string
+          description: 10+ chars (at most 72 bytes), at least one uppercase, one lowercase, one digit.
+        fullName: { type: string }
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string }
+    TokenResponse:
+      type: object
+      properties:
+        accessToken: { type: string }
+        accessTokenExpiresIn: { type: integer, description: seconds }
+        user: { $ref: "#/components/schemas/User" }
+    UserResponse:
+      type: object
+      properties:
+        user: { $ref: "#/components/schemas/User" }
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string }
+        fullName: { type: string }
+        role: { $ref: "#/components/schemas/Role" }
+        createdAt: { type: string, format: date-time }
+    AdminUser:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string }
+        fullName: { type: string }
+        role: { $ref: "#/components/schemas/Role" }
+        isActive: { type: boolean }
+        createdAt: { type: string, format: date-time }
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+            details: { type: array, items: { type: object } }

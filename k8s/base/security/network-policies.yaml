@@ -1,0 +1,239 @@
+# =========================================================================
+# Phase 12: NetworkPolicies — who may open a connection to whom.
+#
+# Before this, every pod could reach every other pod on every port: a
+# compromised pod (say, the traffic generator, or the frontend's nginx)
+# could talk to Postgres, Redis, the RabbitMQ admin API, each service's
+# fault-injection endpoints and Prometheus directly. Now:
+#
+#   1. default-deny: no pod accepts connections unless a policy below
+#      allows it (ingress only — outbound traffic and DNS are unaffected).
+#   2. browsers reach ONLY the frontend (nginx); nginx reaches only the
+#      gateway; the gateway reaches the services; each service reaches only
+#      the data stores it actually uses; Prometheus may scrape everything.
+#
+#   browser ─▶ frontend ─▶ gateway ─▶ auth / hospital / ambulance / blood-bank /
+#                                      power / disaster / notification / resilience / response / simulator
+#   simulator-service ─▶ gateway (it drives the platform only through the API)
+#        services ─▶ postgres (DB services only), redis (notification only),
+#                    rabbitmq (event producers/consumers only)
+#   resilience-service ─▶ drill targets (fault injection), rabbitmq management
+#   prometheus ─▶ every /metrics port      grafana ─▶ prometheus
+#
+# Kubelet probes are not affected (the network plugin always allows the
+# node to reach its own pods).
+#
+# ENFORCEMENT DEPENDS ON THE NETWORK PLUGIN. Verified on k3s (built-in
+# policy controller). Kind 0.24+ (kindnet) and Calico/Cilium enforce them;
+# Minikube's default plugin does NOT — start it with `--cni=calico`.
+# On a plugin without support these objects are accepted but ignored.
+# =========================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+# The only door from outside: the frontend's nginx (NodePort 30080).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: frontend-from-anywhere
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: frontend
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - port: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gateway-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: gateway
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                # resilience-service: broker-drill connectivity check (/health/ready)
+                # simulator-service (Phase 16): drives scenarios through the API, like a user
+                values: [frontend, traffic-generator, prometheus, resilience-service, simulator-service]
+      ports:
+        - port: 8080
+---
+# Domain services: called by the gateway (API traffic) and scraped by
+# Prometheus. Their /internal fault-injection endpoints are additionally
+# token-protected and never proxied by the gateway.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: services-from-gateway
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [auth-service, hospital-service, ambulance-service, blood-bank-service, power-service, disaster-service, notification-service, resilience-service, response-service, simulator-service]
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: [gateway, prometheus]
+      ports:
+        - port: 8081
+        - port: 8082
+        - port: 8083
+        - port: 8084
+        - port: 8085
+        - port: 8086
+        - port: 8087
+        - port: 8088
+        - port: 8089 # response-service (Phase 15)
+        - port: 8090 # simulator-service (Phase 16)
+---
+# Phase 11 Resilience Demo: resilience-service injects faults into (and
+# measures) the four drill targets, and checks the event services'
+# broker connectivity during the broker drill.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: drill-targets-from-resilience
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [hospital-service, ambulance-service, blood-bank-service, power-service, disaster-service, notification-service]
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: resilience-service
+      ports:
+        - port: 8082
+        - port: 8083
+        - port: 8084
+        - port: 8085
+        - port: 8086
+        - port: 8087
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-from-db-services
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: [auth-service, hospital-service, ambulance-service, blood-bank-service, power-service, disaster-service, response-service]
+      ports:
+        - port: 5432
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-from-notification
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: notification-service
+      ports:
+        - port: 6379
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rabbitmq-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: rabbitmq
+  policyTypes: [Ingress]
+  ingress:
+    # AMQP: every service that publishes or consumes events.
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: [gateway, hospital-service, ambulance-service, blood-bank-service, power-service, disaster-service, notification-service, response-service]
+      ports:
+        - port: 5672
+    # Management API: only the broker drill.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: resilience-service
+      ports:
+        - port: 15672
+    # Metrics.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - port: 15692
+---
+# Monitoring. The three UIs are NodePorts (bound to 127.0.0.1 by the Kind
+# config); kube-state-metrics only answers Prometheus.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: monitoring-ingress
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [prometheus, alertmanager, grafana]
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - port: 9090
+        - port: 9093
+        - port: 3000
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kube-state-metrics-from-prometheus
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: kube-state-metrics
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - port: 8080
+        - port: 8081

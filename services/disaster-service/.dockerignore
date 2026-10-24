@@ -1,0 +1,10 @@
+# Keep the build context small and never bake local state into images.
+node_modules
+npm-debug.log
+.env
+.env.*
+!.env.example
+tests
+coverage
+Dockerfile
+.dockerignore

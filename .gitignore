@@ -1,0 +1,48 @@
+# Environment files (never commit real secrets)
+.env
+**/.env
+!.env.example
+!**/.env.example
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+dist/
+build/
+coverage/
+
+# Java / Maven
+target/
+*.class
+*.jar
+!.mvn/wrapper/maven-wrapper.jar
+
+# Frontend build output
+frontend/dist/
+frontend/.vite/
+
+# IDE / OS
+.vscode/
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
+
+# Docker
+*.pid
+
+# Logs
+logs/
+*.log
+
+# Database volumes (bind-mounted local data, if any)
+infrastructure/postgres-data/
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Phase 9: real Kubernetes secret values (copy from secrets.env.example)
+k8s/overlays/local/secrets.env

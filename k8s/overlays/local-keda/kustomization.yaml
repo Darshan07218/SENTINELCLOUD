@@ -1,0 +1,18 @@
+# =========================================================================
+# Phase 17: the local overlay plus queue-based autoscaling (KEDA).
+#
+#   kubectl apply --server-side -k k8s/overlays/local-keda
+#
+# Needs KEDA installed in the cluster first (scripts/k8s-desktop.ps1 deploy
+# does it). Everything else is exactly k8s/overlays/local.
+# =========================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: sentinelcloud
+
+resources:
+  - ../local
+
+components:
+  - ../../components/keda

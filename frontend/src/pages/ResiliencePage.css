@@ -1,0 +1,6 @@
+/* Resilience Demo page (focus rings, current-stage pulse, responsive grid). */
+.rd-btn:focus-visible, .rd-card:focus-within { outline: 2px solid #60a5fa; outline-offset: 2px; }
+@keyframes rd-pulse { 0%, 100% { box-shadow: 0 0 0 0 var(--rd-ring); } 50% { box-shadow: 0 0 0 7px transparent; } }
+.rd-current { animation: rd-pulse 1.6s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .rd-current { animation: none; } }
+@media (max-width: 860px) { .rd-split { grid-template-columns: 1fr !important; } .rd-scenarios { grid-template-columns: 1fr !important; } }

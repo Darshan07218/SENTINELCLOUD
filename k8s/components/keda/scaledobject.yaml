@@ -1,0 +1,61 @@
+# =========================================================================
+# notification-service scales on its backlog: 1 replica per 20 messages
+# waiting in q.notifications.all-events (it consumes EVERY event, so it is
+# the first to fall behind after an outage), plus the same CPU rule it had
+# before. Between 1 and 3 replicas.
+#
+# Why this service: it is built for several replicas (one live queue per
+# pod) and it is not a Resilience Demo drill target (the drills patch their
+# targets' HPAs by name, which KEDA would overwrite).
+#
+# Credentials: read from notification-service's OWN container environment
+# (RABBITMQ_USER / RABBITMQ_PASSWORD, from the shared Secret), so KEDA needs
+# no extra secret. KEDA's operator runs in the "keda" namespace, hence the
+# fully qualified host name.
+# =========================================================================
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: notification-service
+  labels:
+    app.kubernetes.io/name: notification-service
+spec:
+  scaleTargetRef:
+    name: notification-service
+  minReplicaCount: 1
+  maxReplicaCount: 3
+  # No pollingInterval: with a minimum of 1 replica it isn't used for scaling;
+  # the HPA controller asks KEDA's metrics server for the queue length about
+  # every 15 s.
+  advanced:
+    horizontalPodAutoscalerConfig:
+      # Same name as the HPA it replaces, so dashboards and alerts keyed on
+      # the HPA's name (e.g. SentinelHpaAtMaxReplicas) keep working.
+      name: notification-service
+      behavior: # the same as the CPU-only HPA had
+        scaleUp:
+          stabilizationWindowSeconds: 0
+          policies:
+            - type: Pods
+              value: 2
+              periodSeconds: 30
+        scaleDown:
+          stabilizationWindowSeconds: 120
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 60
+  triggers:
+    - type: rabbitmq
+      metadata:
+        protocol: amqp
+        host: amqp://rabbitmq.sentinelcloud.svc.cluster.local:5672/
+        queueName: q.notifications.all-events
+        mode: QueueLength
+        value: "20"
+        usernameFromEnv: RABBITMQ_USER
+        passwordFromEnv: RABBITMQ_PASSWORD
+    - type: cpu
+      metricType: Utilization
+      metadata:
+        value: "70"

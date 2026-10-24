@@ -1,0 +1,128 @@
+# =========================================================================
+# simulator-service (Phase 16) — the scenario simulator: plays scripted
+# disasters out over time and, when switched on, keeps the city alive in
+# the background (docs/PHASE-16-SIMULATOR.md). It acts ONLY through the API
+# gateway, with its own service account (SIMULATOR_EMAIL/SIMULATOR_PASSWORD).
+#
+# Exactly one replica, no HPA: a run's state lives in memory, and two
+# replicas would each drive the platform.
+# =========================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: simulator-service-config
+  labels:
+    app.kubernetes.io/name: simulator-service
+data:
+  PORT: "8090"
+  # Straight to the gateway's Service (cluster-internal), not through nginx.
+  GATEWAY_URL: "http://gateway:8080/api/v1"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: simulator-service
+  labels:
+    app.kubernetes.io/name: simulator-service
+    app.kubernetes.io/component: demo
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: simulator-service
+  # Recreate, not RollingUpdate: never two simulators at once, even briefly.
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8090"
+        prometheus.io/path: "/metrics"
+      labels:
+        app.kubernetes.io/name: simulator-service
+        app.kubernetes.io/component: demo
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      # Long enough for a stopped scenario's clean-up steps to finish.
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: simulator-service
+          image: sentinelcloud/simulator-service:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8090
+          envFrom:
+            - configMapRef:
+                name: simulator-service-config
+          env:
+            - name: SIMULATOR_EMAIL
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelcloud-secrets
+                  key: SIMULATOR_EMAIL
+            - name: SIMULATOR_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelcloud-secrets
+                  key: SIMULATOR_PASSWORD
+            - name: JWT_ACCESS_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelcloud-secrets
+                  key: JWT_ACCESS_SECRET
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 3
+            failureThreshold: 20
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 20m
+              memory: 48Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: simulator-service
+  labels:
+    app.kubernetes.io/name: simulator-service
+    app.kubernetes.io/component: demo
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: simulator-service
+  ports:
+    - name: http
+      port: 8090
+      targetPort: http

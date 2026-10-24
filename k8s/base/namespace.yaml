@@ -1,0 +1,9 @@
+# Every SentinelCloud object lives in one namespace, so the whole system
+# can be inspected (`kubectl get all -n sentinelcloud`) and torn down
+# (`kubectl delete namespace sentinelcloud`) as a unit, without touching
+# anything else in the cluster. It is also the namespace part of every
+# internal DNS name: hospital-service.sentinelcloud.svc.cluster.local.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sentinelcloud

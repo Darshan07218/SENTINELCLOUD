@@ -1,0 +1,146 @@
+# =========================================================================
+# SentinelCloud — Prometheus configuration for KUBERNETES (Phase 10).
+# (Docker Compose uses infrastructure/prometheus/prometheus.yml: same
+#  job names and the same rule files, but static targets.)
+#
+# What gets scraped, and how it's found:
+#   sentinelcloud-pods   every pod annotated prometheus.io/scrape="true"
+#                        (the 8 SentinelCloud services), discovered live
+#                        from the Kubernetes API, so new replicas from
+#                        `kubectl scale` / the HPA are picked up within
+#                        seconds with no config change. job = the pod's
+#                        app.kubernetes.io/name label (= service name).
+#   kubernetes-cadvisor  per-container CPU/memory, read from each node's
+#                        kubelet (/metrics/cadvisor, Phase 12)
+#   kube-state-metrics   pod phase/readiness, restarts, CrashLoopBackOff,
+#                        deployment/HPA status, resource requests/limits
+#   rabbitmq             broker health (rabbitmq_prometheus plugin)
+#   rabbitmq-queues      per-queue depth + consumer count
+#   prometheus, alertmanager, grafana   the monitoring stack itself
+# =========================================================================
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+  external_labels:
+    environment: kubernetes-local
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  # -----------------------------------------------------------------------
+  # SentinelCloud application pods (service discovery)
+  # -----------------------------------------------------------------------
+  - job_name: sentinelcloud-pods
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: [sentinelcloud]
+    relabel_configs:
+      # Only pods that opt in via annotation.
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+        regex: "true"
+        action: keep
+      # Skip pods that are finished or not yet started.
+      - source_labels: [__meta_kubernetes_pod_phase]
+        regex: Pending|Succeeded|Failed|Unknown
+        action: drop
+      # One target per pod (pods with several ports would otherwise appear
+      # once per declared port).
+      - source_labels: [__meta_kubernetes_pod_container_init]
+        regex: "true"
+        action: drop
+      - source_labels: [__meta_kubernetes_pod_container_port_name]
+        regex: http
+        action: keep
+      # Metrics path and port from annotations (defaults: /metrics, the http port).
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+        regex: (.+)
+        target_label: __metrics_path__
+      - source_labels: [__meta_kubernetes_pod_ip, __meta_kubernetes_pod_annotation_prometheus_io_port]
+        regex: (.+);(\d+)
+        replacement: $1:$2
+        target_label: __address__
+      # Labels every dashboard/alert relies on.
+      - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+        target_label: job
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+      - source_labels: [__meta_kubernetes_pod_node_name]
+        target_label: node
+
+  # -----------------------------------------------------------------------
+  # Container CPU / memory (cAdvisor inside each node's kubelet).
+  # Phase 12: scraped from the kubelet's own /metrics/cadvisor endpoint,
+  # which needs only the "nodes/metrics" permission. It used to go through
+  # the API server's node proxy, which needs "nodes/proxy" — a permission
+  # that can be abused to run commands in any pod via the kubelet API.
+  # -----------------------------------------------------------------------
+  - job_name: kubernetes-cadvisor
+    scheme: https
+    metrics_path: /metrics/cadvisor
+    tls_config:
+      ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+      # Local clusters (Kind, Minikube, k3s) give each kubelet a self-signed
+      # serving certificate that the cluster CA didn't issue, so it can't be
+      # verified. The request still authenticates with the ServiceAccount
+      # token and the kubelet authorises it (nodes/metrics only).
+      insecure_skip_verify: true
+    authorization:
+      credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+    kubernetes_sd_configs:
+      - role: node
+    relabel_configs:
+      # The node role's default address is the node's InternalIP:10250 (kubelet).
+      - source_labels: [__meta_kubernetes_node_name]
+        target_label: node
+    metric_relabel_configs:
+      # cAdvisor exposes hundreds of series per container; keep only what
+      # the dashboards and alerts use (Prometheus memory on a laptop).
+      - source_labels: [__name__]
+        regex: container_cpu_usage_seconds_total|container_memory_working_set_bytes|container_cpu_cfs_throttled_periods_total|container_cpu_cfs_periods_total|container_network_receive_bytes_total|container_network_transmit_bytes_total
+        action: keep
+      - source_labels: [namespace]
+        regex: sentinelcloud|kube-system
+        action: keep
+
+  # -----------------------------------------------------------------------
+  # Kubernetes object state
+  # -----------------------------------------------------------------------
+  - job_name: kube-state-metrics
+    static_configs:
+      - targets: ["kube-state-metrics:8080"]
+
+  # -----------------------------------------------------------------------
+  # RabbitMQ (rabbitmq_prometheus plugin, port 15692)
+  # -----------------------------------------------------------------------
+  - job_name: rabbitmq
+    static_configs:
+      - targets: ["rabbitmq:15692"]
+  - job_name: rabbitmq-queues
+    metrics_path: /metrics/detailed
+    params:
+      family: [queue_coarse_metrics, queue_consumer_count]
+    static_configs:
+      - targets: ["rabbitmq:15692"]
+
+  # -----------------------------------------------------------------------
+  # The monitoring stack itself
+  # -----------------------------------------------------------------------
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+  - job_name: alertmanager
+    static_configs:
+      - targets: ["alertmanager:9093"]
+  - job_name: grafana
+    static_configs:
+      - targets: ["grafana:3000"]

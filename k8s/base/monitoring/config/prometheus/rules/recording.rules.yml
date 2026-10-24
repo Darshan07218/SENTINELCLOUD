@@ -1,0 +1,98 @@
+# =========================================================================
+# SentinelCloud — Prometheus RECORDING rules (Phase 10).
+#
+# Pre-computed series that the dashboards and alerts read. Two reasons:
+#   1. One definition of "request rate", "error ratio", "p95 latency"…
+#      used everywhere, so a dashboard panel and the alert that fires on
+#      it can never disagree.
+#   2. Cheap dashboards: histogram_quantile over every bucket of every
+#      service is computed once per 15s here, not on every panel refresh.
+#
+# Naming follows the Prometheus convention  level:metric:operations.
+#
+# Shared by Kubernetes (mounted from a ConfigMap) and Docker Compose
+# (bind-mounted) — one source of truth, same job names in both
+# (job = the service name, e.g. "hospital-service").
+#
+# http_server_requests_seconds is emitted by BOTH stacks with identical
+# labels and buckets (Node: src/metrics.js, Spring: Micrometer), so
+# these rules cover all eight services without per-language variants.
+# Health checks, scrapes and actuator calls are excluded: liveness and
+# readiness probes hit every pod every 5–10s and would otherwise
+# dominate request rates and drag latency percentiles down.
+# =========================================================================
+groups:
+  - name: sentinelcloud.http
+    interval: 15s
+    rules:
+      - record: sentinel:http_requests:rate5m
+        expr: sum by (job) (rate(http_server_requests_seconds_count{uri!~"/health.*|/metrics|/prometheus|/info|/actuator.*"}[5m]))
+
+      - record: sentinel:http_errors:rate5m
+        expr: sum by (job) (rate(http_server_requests_seconds_count{uri!~"/health.*|/metrics|/prometheus|/info|/actuator.*", status=~"5.."}[5m]))
+
+      # 0/0 (a service with no traffic) yields no sample rather than NaN
+      # noise, thanks to the `> 0` guard on the denominator.
+      - record: sentinel:http_error_ratio:rate5m
+        expr: sentinel:http_errors:rate5m / (sentinel:http_requests:rate5m > 0)
+
+      - record: sentinel:http_latency_seconds:p50_5m
+        expr: histogram_quantile(0.50, sum by (job, le) (rate(http_server_requests_seconds_bucket{uri!~"/health.*|/metrics|/prometheus|/info|/actuator.*"}[5m])))
+      - record: sentinel:http_latency_seconds:p95_5m
+        expr: histogram_quantile(0.95, sum by (job, le) (rate(http_server_requests_seconds_bucket{uri!~"/health.*|/metrics|/prometheus|/info|/actuator.*"}[5m])))
+      - record: sentinel:http_latency_seconds:p99_5m
+        expr: histogram_quantile(0.99, sum by (job, le) (rate(http_server_requests_seconds_bucket{uri!~"/health.*|/metrics|/prometheus|/info|/actuator.*"}[5m])))
+
+  - name: sentinelcloud.events
+    interval: 15s
+    rules:
+      # End-to-end: publisher's occurredAt → consumer finished handling.
+      - record: sentinel:event_processing_seconds:p95_5m
+        expr: histogram_quantile(0.95, sum by (job, event_type, le) (rate(sentinel_event_processing_seconds_bucket[5m])))
+      - record: sentinel:event_handler_seconds:p95_5m
+        expr: histogram_quantile(0.95, sum by (job, event_type, le) (rate(sentinel_event_handler_seconds_bucket[5m])))
+      - record: sentinel:events_consumed:rate5m
+        expr: sum by (job, queue, outcome) (rate(sentinel_events_consumed_total[5m]))
+      - record: sentinel:events_published:rate5m
+        expr: sum by (job, event_type) (rate(sentinel_events_published_total[5m]))
+
+  - name: sentinelcloud.resources
+    interval: 15s
+    rules:
+      # Works in Compose AND Kubernetes: reported by each process itself.
+      - record: sentinel:process_cpu_cores:rate2m
+        expr: sum by (job, instance) (rate(process_cpu_seconds_total[2m]))
+
+      # Kubernetes only (cAdvisor + kube-state-metrics), PER POD.
+      #
+      # Why pod-level (container="") series rather than per-container ones:
+      # every kubelet's cAdvisor reports the pod cgroup, but per-container
+      # series depend on the container runtime (present on containerd —
+      # Kind/Minikube — but missing on Docker/cgroupfs-based nodes). Every
+      # SentinelCloud pod runs exactly ONE app container (init containers
+      # have finished), so pod usage == container usage, and the limit to
+      # compare against is the sum of the pod's (app) container limits.
+      #
+      # `job` is derived from the pod name so these join with everything
+      # else by service: Deployment pods are <name>-<template-hash>-<5 chars>,
+      # StatefulSet pods are <name>-<ordinal>.
+      - record: sentinel:pod_cpu_cores:rate2m
+        expr: |
+          label_replace(
+            sum by (namespace, pod) (rate(container_cpu_usage_seconds_total{container="", pod!=""}[2m])),
+          "job", "$1", "pod", "(.+?)(-[a-z0-9]{6,10}-[a-z0-9]{5}|-[0-9]+)")
+      - record: sentinel:pod_cpu_limit:ratio
+        expr: |
+          sentinel:pod_cpu_cores:rate2m
+            / on (namespace, pod) group_left ()   # group_left keeps the left side's labels (incl. job); plain on() would keep only namespace+pod
+          sum by (namespace, pod) (kube_pod_container_resource_limits{resource="cpu"})
+      - record: sentinel:pod_memory_working_set_bytes
+        expr: |
+          label_replace(
+            sum by (namespace, pod) (container_memory_working_set_bytes{container="", pod!=""}),
+          "job", "$1", "pod", "(.+?)(-[a-z0-9]{6,10}-[a-z0-9]{5}|-[0-9]+)")
+      - record: sentinel:pod_memory_limit:ratio
+        expr: |
+          sentinel:pod_memory_working_set_bytes
+            / on (namespace, pod) group_left ()   # group_left keeps the left side's labels (incl. job); plain on() would keep only namespace+pod
+          sum by (namespace, pod) (kube_pod_container_resource_limits{resource="memory"})

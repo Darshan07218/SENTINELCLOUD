@@ -1,0 +1,131 @@
+# =========================================================================
+# SentinelCloud CI (Phase 17, docs/PHASE-17-CI-AND-KEDA.md).
+#
+# Every push and pull request: Node tests + real-PostgreSQL suite, Java
+# tests, alert unit tests, manifest checks, and every Docker image built.
+# Nightly and on demand: the full end-to-end system check (13 checks
+# against the whole Compose stack, from clean).
+# =========================================================================
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 2 * * *" # nightly, 02:17 UTC
+
+permissions:
+  contents: read
+
+# A newer push to the same branch cancels the run it replaces.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  node:
+    name: Node tests + real PostgreSQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies (npm ci where there is a lockfile)
+        run: |
+          for dir in services/*/; do
+            [ -f "$dir/package.json" ] || continue
+            echo "::group::$dir"
+            if [ -f "$dir/package-lock.json" ]; then (cd "$dir" && npm ci --no-audit --no-fund); else (cd "$dir" && npm install --no-audit --no-fund); fi
+            echo "::endgroup::"
+          done
+      - name: Unit + pg-mem integration tests
+        run: ./scripts/run-node-tests.sh
+      - name: Real PostgreSQL suite (throwaway database)
+        run: ./scripts/run-db-tests.sh
+
+  java:
+    name: Java tests (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [blood-bank-service, power-service]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+          cache-dependency-path: services/${{ matrix.service }}/pom.xml
+      - name: mvn test
+        working-directory: services/${{ matrix.service }}
+        run: mvn -B test
+
+  alerts:
+    name: Alert rule unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: promtool test rules
+        run: |
+          docker run --rm -v "$PWD/k8s/base/monitoring/config/prometheus:/cfg:ro" \
+            --entrypoint promtool prom/prometheus:v2.54.1 test rules /cfg/tests/alerts.test.yml
+
+  manifests:
+    name: Compose, Kubernetes and workflow checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Throwaway secrets (.env and k8s secrets.env)
+        run: |
+          ./scripts/generate-secrets.sh compose
+          ./scripts/generate-secrets.sh k8s
+      - name: docker compose config
+        run: docker compose config --quiet
+      - name: kubectl kustomize (local and local-keda overlays)
+        run: |
+          kubectl kustomize k8s/overlays/local >/dev/null
+          kubectl kustomize k8s/overlays/local-keda > keda.yaml
+          grep -q "kind: ScaledObject" keda.yaml
+          # KEDA owns notification-service's HPA there; the CPU-only one must be gone.
+          ! grep -A3 "kind: HorizontalPodAutoscaler" keda.yaml | grep -q "name: notification-service$"
+      - name: actionlint
+        run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.7 -color .github/workflows/ci.yml
+
+  images:
+    name: Build image (${{ matrix.image }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [gateway, auth-service, hospital-service, ambulance-service, blood-bank-service, power-service, disaster-service, notification-service, resilience-service, response-service, simulator-service, frontend]
+    steps:
+      - uses: actions/checkout@v4
+      - name: docker build
+        run: |
+          context="services/${{ matrix.image }}"
+          [ "${{ matrix.image }}" = "frontend" ] && context="frontend"
+          docker build -t "sentinelcloud/${{ matrix.image }}:ci" "$context"
+
+  system:
+    name: End-to-end system check (Compose)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Throwaway secrets
+        run: ./scripts/generate-secrets.sh compose
+      - name: verify-system.sh (13 checks, from clean)
+        run: ./scripts/verify-system.sh compose --yes --skip-unit --teardown

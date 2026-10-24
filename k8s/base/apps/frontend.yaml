@@ -1,0 +1,175 @@
+# =========================================================================
+# Frontend — the React bundle served by unprivileged nginx (production
+# image from frontend/Dockerfile). nginx also reverse-proxies /api, /ws
+# and /health to the gateway Service, so the browser only ever talks to
+# ONE origin: this Service. That is the only thing exposed outside the
+# cluster (NodePort 30080); the gateway and every domain service stay
+# ClusterIP-only.
+# =========================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frontend-config
+  labels:
+    app.kubernetes.io/name: frontend
+data:
+  # Rendered into nginx's config at container start (envsubst template).
+  # Short Service name → resolved via CoreDNS + the namespace search domain.
+  GATEWAY_UPSTREAM: "gateway:8080"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  labels:
+    app.kubernetes.io/name: frontend
+    app.kubernetes.io/component: frontend
+spec:
+  # Replica count owned by the HPA below (see hospital-service.yaml for why).
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: frontend
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: frontend
+        app.kubernetes.io/component: frontend
+    spec:
+      automountServiceAccountToken: false
+      # Don't inject Docker-link-style env vars (GATEWAY_PORT=tcp://…,
+      # REDIS_PORT=tcp://… etc.) for every Service in the namespace — they
+      # can silently collide with real settings like REDIS_PORT/RABBITMQ_PORT.
+      # Services are found via DNS instead.
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: frontend
+      containers:
+        - name: frontend
+          image: sentinelcloud/frontend:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: frontend-config
+          # /healthz is answered by nginx itself (not proxied), so a gateway
+          # outage never gets the frontend restarted or pulled from rotation.
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              exec:
+                # nginx exits immediately on SIGTERM; this gives kube-proxy
+                # time to stop routing new connections here first.
+                command: ["sleep", "5"]
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            # nginx-unprivileged keeps its pid file and temp buffers in /tmp.
+            - name: tmp
+              mountPath: /tmp
+            # The entrypoint renders default.conf.template into conf.d at
+            # startup; an emptyDir keeps that writable with a read-only root.
+            - name: nginx-conf
+              mountPath: /etc/nginx/conf.d
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 32Mi
+        - name: nginx-conf
+          emptyDir:
+            sizeLimit: 1Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  labels:
+    app.kubernetes.io/name: frontend
+    app.kubernetes.io/component: frontend
+spec:
+  # NodePort exposes the Service on a fixed port of every node:
+  #   Kind:     k8s/cluster/kind-cluster.yaml maps node port 30080 → http://localhost:30080
+  #   Minikube: `minikube service frontend -n sentinelcloud --url`
+  # (`kubectl port-forward svc/frontend 8080:80` works on both.)
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: frontend
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      nodePort: 30080
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: frontend
+  labels:
+    app.kubernetes.io/name: frontend
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: frontend
+  minReplicas: 1
+  maxReplicas: 3
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 75
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 30
+    scaleDown:
+      stabilizationWindowSeconds: 120
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60

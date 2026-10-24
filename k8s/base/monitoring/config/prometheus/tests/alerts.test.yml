@@ -1,0 +1,525 @@
+# =========================================================================
+# promtool unit tests for every SentinelCloud alert (Phase 10).
+#
+#   promtool test rules k8s/base/monitoring/config/prometheus/tests/alerts.test.yml
+#
+# Each test feeds synthetic time series in, then asserts which alerts
+# are firing at given times — with the exact labels (which drive
+# Alertmanager routing/inhibition) and the exact rendered annotations.
+# Most also include a "should NOT fire" series (healthy service, probe
+# traffic, low-traffic noise, deliberate scale-to-zero) to pin down
+# false positives, and an early eval_time to prove `for:` is respected.
+# =========================================================================
+rule_files:
+- ../rules/recording.rules.yml
+- ../rules/alerts.rules.yml
+evaluation_interval: 15s
+tests:
+- name: 'SentinelServiceDown: fires after 1m of failed scrapes, never for a healthy service'
+  interval: 15s
+  input_series:
+  - series: up{job="hospital-service", instance="10.42.0.7:8082"}
+    values: 1 0x20
+  - series: up{job="gateway", instance="10.42.0.9:8080"}
+    values: 1x20
+  alert_rule_test:
+  - eval_time: 45s
+    alertname: SentinelServiceDown
+    exp_alerts: []
+  - eval_time: 2m
+    alertname: SentinelServiceDown
+    exp_alerts:
+    - exp_labels:
+        severity: critical
+        job: hospital-service
+        instance: 10.42.0.7:8082
+      exp_annotations:
+        description: 'Prometheus has failed to scrape hospital-service at 10.42.0.7:8082 for over 1 minute: the process is not responding on its metrics endpoint.'
+        runbook: docs/PHASE-10-MONITORING.md#alert-sentinelservicedown
+        summary: hospital-service is down (10.42.0.7:8082)
+- name: 'SentinelDeploymentUnavailable: 0 ready replicas, but not for a deployment deliberately scaled to 0'
+  interval: 15s
+  input_series:
+  - series: kube_deployment_status_replicas_available{job="kube-state-metrics", instance="10.42.0.20:8080", namespace="sentinelcloud", deployment="power-service"}
+    values: '0x20'
+  - series: kube_deployment_spec_replicas{job="kube-state-metrics", instance="10.42.0.20:8080", namespace="sentinelcloud", deployment="power-service"}
+    values: 1x20
+  - series: kube_deployment_status_replicas_available{job="kube-state-metrics", instance="10.42.0.20:8080", namespace="sentinelcloud", deployment="frontend"}
+    values: '0x20'
+  - series: kube_deployment_spec_replicas{job="kube-state-metrics", instance="10.42.0.20:8080", namespace="sentinelcloud", deployment="frontend"}
+    values: '0x20'
+  alert_rule_test:
+  - eval_time: 1m
+    alertname: SentinelDeploymentUnavailable
+    exp_alerts: []
+  - eval_time: 3m
+    alertname: SentinelDeploymentUnavailable
+    exp_alerts:
+    - exp_labels:
+        severity: critical
+        namespace: sentinelcloud
+        deployment: power-service
+        job: power-service
+      exp_annotations:
+        description: Kubernetes reports 0 available (ready) replicas for power-service for 2 minutes. Every request routed to it fails.
+        runbook: docs/PHASE-10-MONITORING.md#alert-sentineldeploymentunavailable
+        summary: Deployment power-service has no available replicas
+- name: 'SentinelDependencyUnreachable: postgres down for a service; rabbitmq is handled by its own alert'
+  interval: 15s
+  input_series:
+  - series: sentinel_dependency_up{job="auth-service", instance="10.42.0.3:8081", dependency="postgres"}
+    values: '0x20'
+  - series: sentinel_dependency_up{job="hospital-service", instance="10.42.0.7:8082", dependency="rabbitmq"}
+    values: '0x20'
+  alert_rule_test:
+  - eval_time: 3m
+    alertname: SentinelDependencyUnreachable
+    exp_alerts:
+    - exp_labels:
+        severity: critical
+        job: auth-service
+        instance: 10.42.0.3:8081
+        dependency: postgres
+      exp_annotations:
+        description: auth-service (10.42.0.3:8081) has reported postgres unreachable for 2 minutes. Its readiness probe is failing, so Kubernetes has taken it out of rotation.
+        runbook: docs/PHASE-10-MONITORING.md#alert-sentineldependencyunreachable
+        summary: auth-service cannot reach postgres
+- name: 'SentinelHighApiLatency: p95 above 1s with real traffic; fast services and health probes don''t count'
+  interval: 15s
+  input_series:
+  - series: http_server_requests_seconds_bucket{job="ambulance-service", instance="10.42.0.5:8083", method="POST", uri="/emergencies", status="201", outcome="SUCCESS", le="0.5"}
+    values: 0+1x60
+  - series: http_server_requests_seconds_bucket{job="ambulance-service", instance="10.42.0.5:8083", method="POST", uri="/emergencies", status="201", outcome="SUCCESS", le="1.0"}
+    values: 0+2x60
+  - series: http_server_requests_seconds_bucket{job="ambulance-service", instance="10.42.0.5:8083", method="POST", uri="/emergencies", status="201", outcome="SUCCESS", le="2.5"}
+    values: 0+30x60
+  - series: http_server_requests_seconds_bucket{job="ambulance-service", instance="10.42.0.5:8083", method="POST", uri="/emergencies", status="201", outcome="SUCCESS", le="+Inf"}
+    values: 0+30x60
+  - series: http_server_requests_seconds_count{job="ambulance-service", instance="10.42.0.5:8083", method="POST", uri="/emergencies", status="201", outcome="SUCCESS"}
+    values: 0+30x60
+  - series: http_server_requests_seconds_bucket{job="gateway", instance="10.42.0.9:8080", method="GET", uri="/api/v1/hospitals/**", status="200", outcome="SUCCESS", le="0.05"}
+    values: 0+30x60
+  - series: http_server_requests_seconds_bucket{job="gateway", instance="10.42.0.9:8080", method="GET", uri="/api/v1/hospitals/**", status="200", outcome="SUCCESS", le="1.0"}
+    values: 0+30x60
+  - series: http_server_requests_seconds_bucket{job="gateway", instance="10.42.0.9:8080", method="GET", uri="/api/v1/hospitals/**", status="200", outcome="SUCCESS", le="2.5"}
+    values: 0+30x60
+  - series: http_server_requests_seconds_bucket{job="gateway", instance="10.42.0.9:8080", method="GET", uri="/api/v1/hospitals/**", status="200", outcome="SUCCESS", le="+Inf"}
+    values: 0+30x60
+  - series: http_server_requests_seconds_count{job="gateway", instance="10.42.0.9:8080", method="GET", uri="/api/v1/hospitals/**", status="200", outcome="SUCCESS"}
+    values: 0+30x60
+  - series: http_server_requests_seconds_bucket{job="gateway", instance="10.42.0.9:8080", method="GET", uri="/health/ready", status="200", outcome="SUCCESS", le="1.0"}
+    values: 0+0x60
+  - series: http_server_requests_seconds_bucket{job="gateway", instance="10.42.0.9:8080", method="GET", uri="/health/ready", status="200", outcome="SUCCESS", le="2.5"}
+    values: 0+0x60
+  - series: http_server_requests_seconds_bucket{job="gateway", instance="10.42.0.9:8080", method="GET", uri="/health/ready", status="200", outcome="SUCCESS", le="+Inf"}
+    values: 0+3x60
+  - series: http_server_requests_seconds_count{job="gateway", instance="10.42.0.9:8080", method="GET", uri="/health/ready", status="200", outcome="SUCCESS"}
+    values: 0+3x60
+  alert_rule_test:
+  - eval_time: 4m
+    alertname: SentinelHighApiLatency
+    exp_alerts: []
+  - eval_time: 12m
+    alertname: SentinelHighApiLatency
+    exp_alerts:
+    - exp_labels:
+        severity: warning
+        job: ambulance-service
+      exp_annotations:
+        description: 95% of ambulance-service API requests should finish within 1s; for the last 5 minutes p95 has been 2.42s.
+        runbook: docs/PHASE-10-MONITORING.md#alert-sentinelhighapilatency
+        summary: ambulance-service p95 latency is 2.42s
+- name: 'SentinelHighErrorRate: >5% 5xx with meaningful traffic only'
+  interval: 15s
+  input_series:
+  - series: http_server_requests_seconds_count{job="hospital-service", instance="10.42.0.7:8082", method="GET", uri="/hospitals", status="200", outcome="SUCCESS"}
+    values: 0+36x60
+  - series: http_server_requests_seconds_count{job="hospital-service", instance="10.42.0.7:8082", method="GET", uri="/hospitals", status="503", outcome="SERVER_ERROR"}
+    values: 0+4x60
+  - series: http_server_requests_seconds_count{job="disaster-service", instance="10.42.0.8:8086", method="GET", uri="/disasters", status="500", outcome="SERVER_ERROR"}
+    values: 0+0.3x60
+  alert_rule_test:
+  - eval_time: 4m
+    alertname: SentinelHighErrorRate
+    exp_alerts: []
+  - eval_time: 12m
+    alertname: SentinelHighErrorRate
+    exp_alerts:
+    - exp_labels:
+        severity: critical
+        job: hospital-service
+      exp_annotations:
+        description: 'More than 5% of hospital-service API requests have returned HTTP 5xx for 5 minutes (current: 10%).'
+        runbook: docs/PHASE-10-MONITORING.md#alert-sentinelhigherrorrate
+        summary: hospital-service is failing 10% of requests
+- name: 'SentinelHighCpu: usage relative to the container''s CPU limit'
+  interval: 15s
+  input_series:
+  - series: container_cpu_usage_seconds_total{job="kubernetes-cadvisor", instance="kubernetes.default.svc:443", namespace="sentinelcloud", pod="ambulance-service-7d9f8c6b5-x2k4p", container="", id="/kubepods/burstable/pod-ambulance-service-7d9f8c6b5-x2k4p"}
+    values: 0+7.125x60
+  - series: kube_pod_container_resource_limits{job="kube-state-metrics", instance="10.42.0.20:8080", namespace="sentinelcloud", pod="ambulance-service-7d9f8c6b5-x2k4p", container="ambulance-service", resource="cpu",
+      unit="core"}
+    values: 0.5x60
+  - series: container_cpu_usage_seconds_total{job="kubernetes-cadvisor", instance="kubernetes.default.svc:443", namespace="sentinelcloud", pod="gateway-5c4d9f7b8-q7wzr", container="", id="/kubepods/burstable/pod-gateway-5c4d9f7b8-q7wzr"}
+    values: 0+0.15x60
+  - series: kube_pod_container_resource_limits{job="kube-state-metrics", instance="10.42.0.20:8080", namespace="sentinelcloud", pod="gateway-5c4d9f7b8-q7wzr", container="gateway", resource="cpu", unit="core"}
+    values: 0.5x60
+  alert_rule_test:
+  - eval_time: 4m
+    alertname: SentinelHighCpu
+    exp_alerts: []
+  - eval_time: 9m
+    alertname: SentinelHighCpu
+    exp_alerts:
+    - exp_labels:
+        severity: warning
+        namespace: sentinelcloud
+        pod: ambulance-service-7d9f8c6b5-x2k4p
+        job: ambulance-service
+      exp_annotations:
+        description: ambulance-service-7d9f8c6b5-x2k4p (ambulance-service) has used over 85% of its CPU limit for 5 minutes. Above the limit it gets throttled, and its latency climbs. The HPA should be
+          adding replicas; if it's already at maxReplicas, raise the limit or maxReplicas.
+        runbook: docs/PHASE-10-MONITORING.md#alert-sentinelhighcpu
+        summary: ambulance-service-7d9f8c6b5-x2k4p is using 95% of its CPU limit
+- name: 'SentinelHighMemory: working set above 90% of the memory limit'
+  interval: 15s
+  input_series:
+  - series: container_memory_working_set_bytes{job="kubernetes-cadvisor", instance="kubernetes.default.svc:443", namespace="sentinelcloud", pod="power-service-6f8b9c7d4-mn2vq", container="", id="/kubepods/burstable/pod-power-service-6f8b9c7d4-mn2vq"}
+    values: 256901120x60
+  - series: kube_pod_container_resource_limits{job="kube-state-metrics", instance="10.42.0.20:8080", namespace="sentinelcloud", pod="power-service-6f8b9c7d4-mn2vq", container="power-service", resource="memory",
+      unit="byte"}
+    values: 268435456x60
+  - series: container_memory_working_set_bytes{job="kubernetes-cadvisor", instance="kubernetes.default.svc:443", namespace="sentinelcloud", pod="redis-0", container="", id="/kubepods/burstable/pod-redis-0"}
+    values: 41943040x60
+  - series: kube_pod_container_resource_limits{job="kube-state-metrics", instance="10.42.0.20:8080", namespace="sentinelcloud", pod="redis-0", container="redis", resource="memory", unit="byte"}
+    values: 201326592x60
+  alert_rule_test:
+  - eval_time: 3m
+    alertname: SentinelHighMemory
+    exp_alerts: []
+  - eval_time: 7m
+    alertname: SentinelHighMemory
+    exp_alerts:
+    - exp_labels:
+        severity: warning
+        namespace: sentinelcloud
+        pod: power-service-6f8b9c7d4-mn2vq
+        job: power-service
+      exp_annotations:
+        description: power-service-6f8b9c7d4-mn2vq (power-service) has used over 90% of its memory limit for 5 minutes. At 100% the kernel OOM-kills it (the pod restarts with reason OOMKilled).
+        runbook: docs/PHASE-10-MONITORING.md#alert-sentinelhighmemory
+        summary: power-service-6f8b9c7d4-mn2vq is using 95.7% of its memory limit
+- name: 'SentinelNodeEventLoopLag: p99 event-loop delay above 500ms'
+  interval: 15s
+  input_series:
+  - series: nodejs_eventloop_lag_p99_seconds{job="gateway", instance="10.42.0.9:8080"}
+    values: 0.8x40
+  - series: nodejs_eventloop_lag_p99_seconds{job="auth-service", instance="10.42.0.3:8081"}
+    values: 0.01x40
+  alert_rule_test:
+  - eval_time: 7m
+    alertname: SentinelNodeEventLoopLag
+    exp_alerts:
+    - exp_labels:
+        severity: warning
+        job: gateway
+        instance: 10.42.0.9:8080
+      exp_annotations:
+        description: 'The Node.js event loop in 10.42.0.9:8080 is delayed by 800ms at p99: every request on that pod waits at least that long. Usually CPU saturation or a synchronous hot path.'
+        runbook: docs/PHASE-10-MONITORING.md#alert-sentinelhighcpu
+        summary: gateway event loop is blocked (800ms p99)
+- name: 'SentinelPodCrashLooping: CrashLoopBackOff for 1 minute'
+  interval: 15s
+  input_series:
+  - series: kube_pod_container_status_waiting_reason{job="kube-state-metrics", instance="10.42.0.20:8080", namespace="sentinelcloud", pod="disaster-service-5b-x", container="disaster-service", reason="CrashLoopBackOff"}
+    values: 1x20
+  - series: kube_pod_container_status_waiting_reason{job="kube-state-metrics", instance="10.42.0.20:8080", namespace="sentinelcloud", pod="auth-service-6c-y", container="auth-service", reason="ContainerCreating"}
+    values: 1x20
+  alert_rule_test:
+  - eval_time: 30s
+    alertname: SentinelPodCrashLooping
+    exp_alerts: []
+  - eval_time: 2m
+    alertname: SentinelPodCrashLooping
+    exp_alerts:
+    - exp_labels:
+        severity: critical
+        namespace: sentinelcloud
+        pod: disaster-service-5b-x
+        container: disaster-service
+        job: disaster-service
+      exp_annotations:
+        description: Container disaster-service in disaster-service-5b-x keeps exiting and Kubernetes is backing off restarts (CrashLoopBackOff). Check `kubectl logs disaster-service-5b-x -n sentinelcloud
+          --previous`.
+        runbook: docs/PHASE-10-MONITORING.md#alert-sentinelpodcrashlooping
+        summary: disaster-service-5b-x is crash-looping
+- name: 'SentinelPodRestartingFrequently: more than 2 restarts in 15 minutes'
+  interval: 15s
+  input_series:
+  - series: kube_pod_container_status_restarts_total{job="kube-state-metrics", instance="10.42.0.20:8080", namespace="sentinelcloud", pod="power-service-6f8-q", container="power-service"}
+    values: 0x8 1x8 2x8 3x8 4x8
+  - series: kube_pod_container_status_restarts_total{job="kube-state-metrics", instance="10.42.0.20:8080", namespace="sentinelcloud", pod="gateway-5c4-xyz", container="gateway"}
+    values: 1x40
+  alert_rule_test:
+  - eval_time: 1m
+    alertname: SentinelPodRestartingFrequently
+    exp_alerts: []
+  - eval_time: 9m
+    alertname: SentinelPodRestartingFrequently
+    exp_alerts:
+    - exp_labels:
+        severity: warning
+        namespace: sentinelcloud
+        pod: power-service-6f8-q
+        container: power-service
+        job: power-service
+      exp_annotations:
+        description: Container power-service in power-service-6f8-q is restarting repeatedly (OOMKilled, failing liveness probe, or crashing). It may not have reached CrashLoopBackOff yet.
+        runbook: docs/PHASE-10-MONITORING.md#alert-sentinelpodcrashlooping
+        summary: power-service-6f8-q restarted 4 times in 15 minutes
+- name: 'SentinelPodNotReady: failing readiness for 5 minutes'
+  interval: 15s
+  input_series:
+  - series: kube_pod_status_ready{job="kube-state-metrics", instance="10.42.0.20:8080", namespace="sentinelcloud", pod="notification-service-9-z", condition="false"}
+    values: 1x40
+  - series: kube_pod_status_ready{job="kube-state-metrics", instance="10.42.0.20:8080", namespace="sentinelcloud", pod="notification-service-9-z", condition="true"}
+    values: '0x40'
+  alert_rule_test:
+  - eval_time: 3m
+    alertname: SentinelPodNotReady
+    exp_alerts: []
+  - eval_time: 6m
+    alertname: SentinelPodNotReady
+    exp_alerts:
+    - exp_labels:
+        severity: warning
+        namespace: sentinelcloud
+        pod: notification-service-9-z
+      exp_annotations:
+        description: notification-service-9-z is running but failing its readiness probe, so it receives no traffic. Usually a dependency it needs (Postgres/RabbitMQ/Redis) is unreachable.
+        runbook: docs/PHASE-10-MONITORING.md#alert-sentinelpodnotready
+        summary: notification-service-9-z has not been Ready for 5 minutes
+- name: 'SentinelHpaAtMaxReplicas: autoscaler pinned at its ceiling'
+  interval: 15s
+  input_series:
+  - series: kube_horizontalpodautoscaler_status_current_replicas{job="kube-state-metrics", instance="10.42.0.20:8080", namespace="sentinelcloud", horizontalpodautoscaler="ambulance-service"}
+    values: 5x60
+  - series: kube_horizontalpodautoscaler_spec_max_replicas{job="kube-state-metrics", instance="10.42.0.20:8080", namespace="sentinelcloud", horizontalpodautoscaler="ambulance-service"}
+    values: 5x60
+  alert_rule_test:
+  - eval_time: 5m
+    alertname: SentinelHpaAtMaxReplicas
+    exp_alerts: []
+  - eval_time: 11m
+    alertname: SentinelHpaAtMaxReplicas
+    exp_alerts:
+    - exp_labels:
+        severity: info
+        namespace: sentinelcloud
+        horizontalpodautoscaler: ambulance-service
+        job: ambulance-service
+      exp_annotations:
+        description: The autoscaler can't add more pods. If CPU/latency alerts are also firing, the service needs a higher maxReplicas, more efficient code, or a bigger node.
+        runbook: docs/PHASE-10-MONITORING.md#alert-sentinelhpaatmaxreplicas
+        summary: HPA ambulance-service has been at maxReplicas for 10 minutes
+- name: 'SentinelRabbitMQDown: broker metrics endpoint unreachable'
+  interval: 15s
+  input_series:
+  - series: up{job="rabbitmq", instance="rabbitmq:15692"}
+    values: 1 0x20
+  alert_rule_test:
+  - eval_time: 2m
+    alertname: SentinelRabbitMQDown
+    exp_alerts:
+    - exp_labels:
+        severity: critical
+        job: rabbitmq
+        instance: rabbitmq:15692
+      exp_annotations:
+        description: 'Prometheus can''t reach RabbitMQ''s metrics endpoint. Disaster events are not being published or fanned out: no automatic hospital/ambulance/blood/power reactions, and the live dashboard
+          is silent.'
+        runbook: docs/PHASE-10-MONITORING.md#alert-sentinelrabbitmqdown
+        summary: RabbitMQ is down
+- name: 'SentinelServiceLostBrokerConnection: a service''s own view of the broker'
+  interval: 15s
+  input_series:
+  - series: sentinel_dependency_up{job="disaster-service", instance="10.42.0.8:8086", dependency="rabbitmq"}
+    values: 1 0x20
+  - series: sentinel_dependency_up{job="power-service", instance="10.42.0.6:8085", dependency="rabbitmq"}
+    values: 1x20
+  alert_rule_test:
+  - eval_time: 1m
+    alertname: SentinelServiceLostBrokerConnection
+    exp_alerts: []
+  - eval_time: 3m
+    alertname: SentinelServiceLostBrokerConnection
+    exp_alerts:
+    - exp_labels:
+        severity: critical
+        job: disaster-service
+        instance: 10.42.0.8:8086
+        dependency: rabbitmq
+      exp_annotations:
+        description: disaster-service (10.42.0.8:8086) has had no RabbitMQ connection for 2 minutes. It is retrying, but its events are not flowing.
+        runbook: docs/PHASE-10-MONITORING.md#alert-sentinelrabbitmqdown
+        summary: disaster-service is disconnected from RabbitMQ
+- name: 'SentinelQueueBacklog: more than 100 ready messages for 5 minutes'
+  interval: 15s
+  input_series:
+  - series: rabbitmq_detailed_queue_messages_ready{job="rabbitmq-queues", instance="rabbitmq:15692", vhost="/", queue="q.ambulance.disaster-events"}
+    values: 150x40
+  - series: rabbitmq_detailed_queue_messages_ready{job="rabbitmq-queues", instance="rabbitmq:15692", vhost="/", queue="q.hospital.disaster-events"}
+    values: 3x40
+  alert_rule_test:
+  - eval_time: 7m
+    alertname: SentinelQueueBacklog
+    exp_alerts:
+    - exp_labels:
+        severity: warning
+        job: rabbitmq-queues
+        instance: rabbitmq:15692
+        vhost: /
+        queue: q.ambulance.disaster-events
+      exp_annotations:
+        description: 'Consumers of q.ambulance.disaster-events are falling behind: events will be processed late. Scale the consuming service or check its handler errors.'
+        runbook: docs/PHASE-10-MONITORING.md#alert-sentinelqueuebacklog
+        summary: Queue q.ambulance.disaster-events has 150 messages waiting
+- name: 'SentinelQueueWithoutConsumers: messages waiting and nobody consuming'
+  interval: 15s
+  input_series:
+  - series: rabbitmq_detailed_queue_consumers{job="rabbitmq-queues", instance="rabbitmq:15692", vhost="/", queue="q.power.disaster-events"}
+    values: '0x40'
+  - series: rabbitmq_detailed_queue_messages_ready{job="rabbitmq-queues", instance="rabbitmq:15692", vhost="/", queue="q.power.disaster-events"}
+    values: 4x40
+  - series: rabbitmq_detailed_queue_consumers{job="rabbitmq-queues", instance="rabbitmq:15692", vhost="/", queue="q.bloodbank.disaster-events"}
+    values: '0x40'
+  - series: rabbitmq_detailed_queue_messages_ready{job="rabbitmq-queues", instance="rabbitmq:15692", vhost="/", queue="q.bloodbank.disaster-events"}
+    values: '0x40'
+  # Phase 14: the dead-letter queue never has consumers; it must not fire here.
+  - series: rabbitmq_detailed_queue_consumers{job="rabbitmq-queues", instance="rabbitmq:15692", vhost="/", queue="q.dead-letters"}
+    values: '0x40'
+  - series: rabbitmq_detailed_queue_messages_ready{job="rabbitmq-queues", instance="rabbitmq:15692", vhost="/", queue="q.dead-letters"}
+    values: 2x40
+  alert_rule_test:
+  - eval_time: 7m
+    alertname: SentinelQueueWithoutConsumers
+    exp_alerts:
+    - exp_labels:
+        severity: warning
+        job: rabbitmq-queues
+        instance: rabbitmq:15692
+        vhost: /
+        queue: q.power.disaster-events
+      exp_annotations:
+        description: 'Nobody is consuming q.power.disaster-events: the service that owns it is down or never registered its consumer.'
+        runbook: docs/PHASE-10-MONITORING.md#alert-sentinelqueuebacklog
+        summary: Queue q.power.disaster-events has messages but no consumers
+- name: 'SentinelSlowEventProcessing: p95 publish-to-handled above 5s'
+  interval: 15s
+  input_series:
+  - series: sentinel_event_processing_seconds_bucket{job="ambulance-service", instance="10.42.0.5:8083", queue="q.ambulance.disaster-events", event_type="disaster.detected", outcome="success", le="1.0"}
+    values: 0+0.1x60
+  - series: sentinel_event_processing_seconds_bucket{job="ambulance-service", instance="10.42.0.5:8083", queue="q.ambulance.disaster-events", event_type="disaster.detected", outcome="success", le="5.0"}
+    values: 0+0.2x60
+  - series: sentinel_event_processing_seconds_bucket{job="ambulance-service", instance="10.42.0.5:8083", queue="q.ambulance.disaster-events", event_type="disaster.detected", outcome="success", le="10.0"}
+    values: 0+2x60
+  - series: sentinel_event_processing_seconds_bucket{job="ambulance-service", instance="10.42.0.5:8083", queue="q.ambulance.disaster-events", event_type="disaster.detected", outcome="success", le="+Inf"}
+    values: 0+2x60
+  alert_rule_test:
+  - eval_time: 12m
+    alertname: SentinelSlowEventProcessing
+    exp_alerts:
+    - exp_labels:
+        severity: warning
+        job: ambulance-service
+        event_type: disaster.detected
+      exp_annotations:
+        description: From publish to handled, disaster.detected events take 9.722s at p95 in ambulance-service. Disaster reactions should land in well under 5s.
+        runbook: docs/PHASE-10-MONITORING.md#alert-sentinelsloweventprocessing
+        summary: ambulance-service takes 9.722s (p95) to process disaster.detected
+- name: 'SentinelEventHandlerErrors: events failing in a consumer'
+  interval: 15s
+  input_series:
+  - series: sentinel_events_consumed_total{job="hospital-service", instance="10.42.0.7:8082", queue="q.hospital.disaster-events", event_type="disaster.detected", outcome="success"}
+    values: 0+1x60
+  - series: sentinel_events_consumed_total{job="hospital-service", instance="10.42.0.7:8082", queue="q.hospital.disaster-events", event_type="disaster.detected", outcome="error"}
+    values: 0+1x60
+  alert_rule_test:
+  - eval_time: 12m
+    alertname: SentinelEventHandlerErrors
+    exp_alerts:
+    - exp_labels:
+        severity: warning
+        job: hospital-service
+        queue: q.hospital.disaster-events
+      exp_annotations:
+        description: hospital-service has been rejecting or failing events from q.hospital.disaster-events for 5 minutes, even after retries. Since Phase 14 the failed events are kept in q.dead-letters (SentinelDeadLetters) and can be replayed once the cause is fixed.
+        runbook: docs/PHASE-10-MONITORING.md#alert-sentineleventhandlererrors
+        summary: hospital-service is failing to process events from q.hospital.disaster-events
+- name: 'SentinelOutboxBacklog: events saved but not confirmed by RabbitMQ'
+  interval: 15s
+  input_series:
+  # Two replicas of the same service read the same table: one alert, not two.
+  - series: sentinel_outbox_pending{job="disaster-service", instance="10.42.0.8:8086"}
+    values: 3x40
+  - series: sentinel_outbox_pending{job="disaster-service", instance="10.42.0.18:8086"}
+    values: 3x40
+  # A service whose relay keeps up must not fire.
+  - series: sentinel_outbox_pending{job="ambulance-service", instance="10.42.0.5:8083"}
+    values: '0x40'
+  alert_rule_test:
+  - eval_time: 1m
+    alertname: SentinelOutboxBacklog
+    exp_alerts: []
+  - eval_time: 3m
+    alertname: SentinelOutboxBacklog
+    exp_alerts:
+    - exp_labels:
+        severity: warning
+        job: disaster-service
+      exp_annotations:
+        description: "disaster-service saved these changes but RabbitMQ hasn't confirmed their events for 2 minutes. Nothing is lost: the relay retries every 2 s and sends them in order once RabbitMQ is reachable. Other services won't react until then."
+        runbook: docs/PHASE-14-RELIABLE-EVENTS.md#alert-sentineloutboxbacklog
+        summary: disaster-service has 3 event(s) waiting in its outbox
+- name: 'SentinelDeadLetters: events parked in the dead-letter queue'
+  interval: 15s
+  input_series:
+  - series: rabbitmq_detailed_queue_messages_ready{job="rabbitmq-queues", instance="rabbitmq:15692", vhost="/", queue="q.dead-letters"}
+    values: '0x8 2x32'
+  # A normal queue with messages is SentinelQueueBacklog's business, not this alert's.
+  - series: rabbitmq_detailed_queue_messages_ready{job="rabbitmq-queues", instance="rabbitmq:15692", vhost="/", queue="q.hospital.disaster-events"}
+    values: 5x40
+  alert_rule_test:
+  - eval_time: 2m30s
+    alertname: SentinelDeadLetters
+    exp_alerts: []
+  - eval_time: 4m
+    alertname: SentinelDeadLetters
+    exp_alerts:
+    - exp_labels:
+        severity: warning
+        job: rabbitmq-queues
+        instance: rabbitmq:15692
+        vhost: /
+        queue: q.dead-letters
+      exp_annotations:
+        description: These events failed every retry (or weren't valid events) and are parked in q.dead-letters. List them with GET /api/v1/notifications/dead-letters; replay them with POST /api/v1/notifications/dead-letters/replay once the cause is fixed.
+        runbook: docs/PHASE-14-RELIABLE-EVENTS.md#alert-sentineldeadletters
+        summary: 2 event(s) in the dead-letter queue
+- name: 'SentinelMonitoringTargetDown: kube-state-metrics unreachable'
+  interval: 15s
+  input_series:
+  - series: up{job="kube-state-metrics", instance="kube-state-metrics:8080"}
+    values: '0x40'
+  alert_rule_test:
+  - eval_time: 7m
+    alertname: SentinelMonitoringTargetDown
+    exp_alerts:
+    - exp_labels:
+        severity: warning
+        job: kube-state-metrics
+        instance: kube-state-metrics:8080
+      exp_annotations:
+        description: kube-state-metrics is not being scraped, so parts of the dashboards or alerting are blind.
+        runbook: docs/PHASE-10-MONITORING.md#alert-sentinelmonitoringtargetdown
+        summary: Monitoring component kube-state-metrics is down

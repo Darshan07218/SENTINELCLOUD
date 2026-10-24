@@ -1,0 +1,76 @@
+# =========================================================================
+# SentinelCloud — Prometheus configuration for DOCKER COMPOSE (Phase 10).
+#
+# Kubernetes uses k8s/base/monitoring/config/prometheus/prometheus.yml
+# instead (service discovery). Both use the SAME job names (= service
+# names) and the SAME rule files (bind-mounted from k8s/base/monitoring/
+# config/prometheus/rules), so every dashboard and alert works in both.
+#
+# Only Kubernetes-specific series (pod restarts, CrashLoopBackOff,
+# container CPU/memory vs limits) are absent here: Compose has no
+# kube-state-metrics or cAdvisor, so those panels show "No data" and
+# those alerts never fire. Process CPU/memory, request rate, latency,
+# errors, availability and event metrics all work.
+# =========================================================================
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+  external_labels:
+    environment: docker-compose
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  # ---- Node services: GET /metrics (services/<name>/src/metrics.js) ----
+  - job_name: gateway
+    static_configs: [{ targets: ["gateway:8080"] }]
+  - job_name: auth-service
+    static_configs: [{ targets: ["auth-service:8081"] }]
+  - job_name: hospital-service
+    static_configs: [{ targets: ["hospital-service:8082"] }]
+  - job_name: ambulance-service
+    static_configs: [{ targets: ["ambulance-service:8083"] }]
+  - job_name: disaster-service
+    static_configs: [{ targets: ["disaster-service:8086"] }]
+  - job_name: notification-service
+    static_configs: [{ targets: ["notification-service:8087"] }]
+  - job_name: resilience-service
+    static_configs: [{ targets: ["resilience-service:8088"] }]
+  - job_name: response-service
+    static_configs: [{ targets: ["response-service:8089"] }]
+  - job_name: simulator-service
+    static_configs: [{ targets: ["simulator-service:8090"] }]
+
+  # ---- Spring Boot services: Actuator's Prometheus endpoint ----
+  # The actuator base path is "/" in application.yml, so it's /prometheus
+  # (Phase 1's /actuator/prometheus here was wrong and never matched).
+  - job_name: blood-bank-service
+    metrics_path: /prometheus
+    static_configs: [{ targets: ["blood-bank-service:8084"] }]
+  - job_name: power-service
+    metrics_path: /prometheus
+    static_configs: [{ targets: ["power-service:8085"] }]
+
+  # ---- RabbitMQ (rabbitmq_prometheus plugin) ----
+  - job_name: rabbitmq
+    static_configs: [{ targets: ["rabbitmq:15692"] }]
+  - job_name: rabbitmq-queues
+    metrics_path: /metrics/detailed
+    params:
+      family: [queue_coarse_metrics, queue_consumer_count]
+    static_configs: [{ targets: ["rabbitmq:15692"] }]
+
+  # ---- The monitoring stack itself ----
+  - job_name: prometheus
+    static_configs: [{ targets: ["localhost:9090"] }]
+  - job_name: alertmanager
+    static_configs: [{ targets: ["alertmanager:9093"] }]
+  - job_name: grafana
+    static_configs: [{ targets: ["grafana:3000"] }]

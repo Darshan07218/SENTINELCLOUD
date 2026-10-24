@@ -1,0 +1,96 @@
+# =========================================================================
+# SentinelCloud — Kustomize BASE (Phase 9).
+#
+# Environment-independent manifests. Not applied directly: an overlay
+# (k8s/overlays/local for Kind/Minikube) adds what differs per
+# environment — the Secret and image tags. Deploy with:
+#
+#   kubectl apply -k k8s/overlays/local
+# =========================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: sentinelcloud
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: sentinelcloud
+    includeSelectors: false # never alter selectors (they're immutable on Deployments)
+
+resources:
+  - namespace.yaml
+  - config/common-configmap.yaml
+  # Infrastructure (stateful, with PersistentVolumeClaims)
+  - infrastructure/postgres.yaml
+  - infrastructure/redis.yaml
+  - infrastructure/rabbitmq.yaml
+  # Application services (stateless Deployments + Services + HPAs)
+  - apps/auth-service.yaml
+  - apps/hospital-service.yaml
+  - apps/ambulance-service.yaml
+  - apps/blood-bank-service.yaml
+  - apps/power-service.yaml
+  - apps/disaster-service.yaml
+  - apps/notification-service.yaml
+  - apps/gateway.yaml
+  - apps/frontend.yaml
+  # Resilience Demo control plane (Phase 11)
+  - apps/resilience-service.yaml
+  # Automated response engine (Phase 15)
+  - apps/response-service.yaml
+  # Scenario simulator (Phase 16)
+  - apps/simulator-service.yaml
+  # Monitoring & observability (Phase 10)
+  - monitoring/prometheus.yaml
+  - monitoring/alertmanager.yaml
+  - monitoring/grafana.yaml
+  - monitoring/kube-state-metrics.yaml
+  # Presentation helper — starts at replicas: 0 (see the file header)
+  - demo/traffic-generator.yaml
+  # Phase 12: default-deny NetworkPolicies + explicit allow rules
+  - security/network-policies.yaml
+
+configMapGenerator:
+  # The same multi-database init script Docker Compose mounts, mounted
+  # into the Postgres StatefulSet at /docker-entrypoint-initdb.d.
+  - name: postgres-init
+    files:
+      - config/init-multiple-databases.sh
+  # Phase 15: re-runs the script above on every Postgres start (postStart
+  # hook), so databases added later appear on existing installs too.
+  - name: postgres-scripts
+    files:
+      - config/postgres-ensure-databases.sh
+  # Phase 14: applies the dead-letter policy; the RabbitMQ StatefulSet runs it
+  # as its postStart hook (docker-compose.yml mounts the same file).
+  - name: rabbitmq-scripts
+    files:
+      - config/rabbitmq-set-policies.sh
+
+  # ---- Phase 10: monitoring configuration. The SAME files are bind-mounted
+  # by docker-compose.yml, so Kubernetes and Compose share one source of truth.
+  - name: rabbitmq-plugins
+    files:
+      - monitoring/config/rabbitmq/enabled_plugins
+  - name: prometheus-config
+    files:
+      - monitoring/config/prometheus/prometheus.yml
+  - name: prometheus-rules
+    files:
+      - monitoring/config/prometheus/rules/recording.rules.yml
+      - monitoring/config/prometheus/rules/alerts.rules.yml
+  - name: alertmanager-config
+    files:
+      - monitoring/config/alertmanager/alertmanager.yml
+  - name: grafana-datasources
+    files:
+      - monitoring/config/grafana/datasources.yml
+  - name: grafana-dashboard-provider
+    files:
+      - monitoring/config/grafana/dashboards.yml
+  - name: grafana-dashboards
+    files:
+      - monitoring/config/grafana/dashboards/system-health.json
+      - monitoring/config/grafana/dashboards/service-detail.json
+      - monitoring/config/grafana/dashboards/kubernetes.json
+      - monitoring/config/grafana/dashboards/event-bus.json

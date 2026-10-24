@@ -1,0 +1,40 @@
+# Kind cluster for SentinelCloud (Phase 9).
+#
+#   kind create cluster --config k8s/cluster/kind-cluster.yaml
+#
+# One control-plane node + two workers, so you can actually watch
+# `kubectl scale` spread replicas across nodes (`kubectl get pods -o wide`).
+# Kind nodes are Docker containers, so a NodePort is only reachable from
+# your machine if it's mapped here: node port 30080 (the frontend
+# Service) → http://localhost:30080, plus Grafana/Prometheus/Alertmanager
+# (Phase 10). Port mappings are fixed at creation: an existing cluster
+# must be recreated to get new ones (or use kubectl port-forward).
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: sentinelcloud
+nodes:
+  - role: control-plane
+    # Phase 12: listenAddress 127.0.0.1 — reachable from this computer only,
+    # not from everyone on the same Wi-Fi/LAN. Prometheus and Alertmanager
+    # have no login at all, so they must never be exposed beyond localhost.
+    # (Demoing from another device? Change the frontend's line only.)
+    extraPortMappings:
+      - containerPort: 30080   # frontend      → http://localhost:30080
+        hostPort: 30080
+        listenAddress: "127.0.0.1"
+        protocol: TCP
+      # Phase 10: monitoring UIs
+      - containerPort: 30030   # Grafana       → http://localhost:30030
+        hostPort: 30030
+        listenAddress: "127.0.0.1"
+        protocol: TCP
+      - containerPort: 30090   # Prometheus    → http://localhost:30090
+        hostPort: 30090
+        listenAddress: "127.0.0.1"
+        protocol: TCP
+      - containerPort: 30093   # Alertmanager  → http://localhost:30093
+        hostPort: 30093
+        listenAddress: "127.0.0.1"
+        protocol: TCP
+  - role: worker
+  - role: worker

@@ -1,0 +1,68 @@
+# =========================================================================
+# SentinelCloud — Alertmanager configuration (Phase 10).
+#
+# Prometheus decides WHEN an alert fires; Alertmanager decides what
+# happens next: grouping related alerts into one notification,
+# suppressing symptoms of a known root cause (inhibition), silencing
+# during maintenance, and routing to receivers.
+#
+# No paid service and no secrets are needed: the default receiver has
+# no integrations, so alerts are visible in the Alertmanager UI
+# (silence/inspect them there), in Prometheus /alerts, and in Grafana.
+# To get real notifications, add e.g. an email_configs / slack_configs /
+# webhook_configs block to the "sentinelcloud-oncall" receiver; an
+# example webhook is shown commented out below.
+# =========================================================================
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: sentinelcloud-oncall
+  # One notification per (alert, service); a crash-looping pod and a
+  # down service arrive as separate, clearly-named groups.
+  group_by: [alertname, job, namespace]
+  group_wait: 10s        # wait briefly so near-simultaneous alerts are batched
+  group_interval: 1m     # how often to send updates for an existing group
+  repeat_interval: 4h    # re-notify while still firing
+  routes:
+    # Critical alerts: shortest wait, re-notify hourly.
+    - matchers: ['severity="critical"']
+      receiver: sentinelcloud-oncall
+      group_wait: 5s
+      repeat_interval: 1h
+    # Informational alerts are recorded but never re-notified.
+    - matchers: ['severity="info"']
+      receiver: sentinelcloud-oncall
+      repeat_interval: 168h
+
+inhibit_rules:
+  # RabbitMQ itself is down → don't also page for every service that
+  # lost its connection to it, or for queues nobody can consume from.
+  - source_matchers: ['alertname="SentinelRabbitMQDown"']
+    target_matchers: ['alertname=~"SentinelServiceLostBrokerConnection|SentinelQueueWithoutConsumers|SentinelQueueBacklog|SentinelEventHandlerErrors"']
+  # …and the two services whose readiness REQUIRES the broker (disaster-
+  # service publishes, notification-service fans out) going unready is
+  # the expected consequence, not a separate incident.
+  - source_matchers: ['alertname="SentinelRabbitMQDown"']
+    target_matchers: ['alertname="SentinelDeploymentUnavailable"', 'job=~"disaster-service|notification-service"']
+  - source_matchers: ['alertname="SentinelRabbitMQDown"']
+    target_matchers: ['alertname="SentinelPodNotReady"', 'pod=~"(disaster|notification)-service-.+"']
+  # A service is down → its latency/error/event alerts are symptoms.
+  - source_matchers: ['alertname="SentinelServiceDown"']
+    target_matchers: ['alertname=~"SentinelHighApiLatency|SentinelHighErrorRate|SentinelServiceLostBrokerConnection|SentinelDependencyUnreachable"']
+    equal: [job]
+  # A pod is crash-looping → "not ready" and "restarting" are implied.
+  - source_matchers: ['alertname="SentinelPodCrashLooping"']
+    target_matchers: ['alertname=~"SentinelPodNotReady|SentinelPodRestartingFrequently"']
+    equal: [namespace, pod]
+  # A critical alert suppresses the warning version of the same alert.
+  - source_matchers: ['severity="critical"']
+    target_matchers: ['severity="warning"']
+    equal: [alertname, job, namespace]
+
+receivers:
+  - name: sentinelcloud-oncall
+    # Example (uncomment and point at any HTTP endpoint you control):
+    # webhook_configs:
+    #   - url: http://my-webhook-receiver:9000/alerts
+    #     send_resolved: true

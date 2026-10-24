@@ -1,0 +1,181 @@
+openapi: 3.0.3
+info:
+  title: SentinelCloud Hospital Intelligence Service
+  version: "0.3.0"
+  description: >
+    Hospital registration, capacity management, geographic queries, and
+    capacity alerts. Every route requires a Bearer access token issued
+    by the Auth Service. Reachable directly on :8082, and via the API
+    Gateway at /api/v1/hospitals/* (the gateway strips the
+    /api/v1/hospitals prefix before forwarding).
+servers:
+  - url: http://localhost:8082
+    description: Direct to hospital-service
+  - url: http://localhost:8080/api/v1/hospitals
+    description: Via API Gateway
+security:
+  - bearerAuth: []
+paths:
+  /:
+    post:
+      summary: Register a new hospital (HOSPITAL_ADMIN or SYSTEM_ADMIN)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateHospitalRequest" }
+      responses:
+        "201": { description: Hospital created }
+        "400": { description: Validation error }
+        "401": { description: Missing/invalid token }
+        "403": { description: Role not permitted }
+    get:
+      summary: List hospitals (paginated)
+      parameters:
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: limit, in: query, schema: { type: integer, default: 20 } }
+      responses:
+        "200": { description: Paginated hospital list }
+  /{id}:
+    get:
+      summary: Get a single hospital by id
+      parameters: [{ $ref: "#/components/parameters/HospitalId" }]
+      responses:
+        "200": { description: Hospital found }
+        "404": { description: Hospital not found }
+    put:
+      summary: Update a hospital's profile fields (owner HOSPITAL_ADMIN or SYSTEM_ADMIN)
+      parameters: [{ $ref: "#/components/parameters/HospitalId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateHospitalRequest" }
+      responses:
+        "200": { description: Hospital updated }
+        "403": { description: Not the managing HOSPITAL_ADMIN }
+        "404": { description: Hospital not found }
+        "409": { description: Capacity invariant violation }
+  /{id}/beds:
+    patch:
+      summary: Update available (non-ICU) bed count
+      parameters: [{ $ref: "#/components/parameters/HospitalId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [availableBeds]
+              properties: { availableBeds: { type: integer, minimum: 0 } }
+      responses:
+        "200": { description: Updated }
+        "409": { description: availableBeds exceeds totalBeds }
+  /{id}/icu:
+    patch:
+      summary: Update available ICU bed count
+      parameters: [{ $ref: "#/components/parameters/HospitalId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [availableIcuBeds]
+              properties: { availableIcuBeds: { type: integer, minimum: 0 } }
+      responses:
+        "200": { description: Updated }
+  /{id}/ventilators:
+    patch:
+      summary: Update available ventilator count
+      parameters: [{ $ref: "#/components/parameters/HospitalId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [availableVentilators]
+              properties: { availableVentilators: { type: integer, minimum: 0 } }
+      responses:
+        "200": { description: Updated }
+  /{id}/overload:
+    post:
+      summary: Mark (or clear) a hospital as overloaded
+      parameters: [{ $ref: "#/components/parameters/HospitalId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [overloaded]
+              properties: { overloaded: { type: boolean } }
+      responses:
+        "200": { description: Status updated }
+  /near:
+    get:
+      summary: Find hospitals within a radius of a lat/lng point, nearest first
+      parameters:
+        - { name: lat, in: query, required: true, schema: { type: number } }
+        - { name: lng, in: query, required: true, schema: { type: number } }
+        - { name: radiusKm, in: query, schema: { type: number, default: 25 } }
+      responses:
+        "200": { description: Hospitals within radius, each with a distanceKm field }
+  /icu-available:
+    get:
+      summary: List hospitals with at least one available ICU bed, most-available first
+      responses:
+        "200": { description: Hospital list }
+  /alerts:
+    get:
+      summary: Aggregated capacity alerts across every hospital, most severe first
+      responses:
+        "200": { description: Alert list }
+  /stats/summary:
+    get:
+      summary: Dashboard summary — totals, availability, occupancy percentages, overloaded count
+      responses:
+        "200": { description: Summary stats }
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
+  parameters:
+    HospitalId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+  schemas:
+    CreateHospitalRequest:
+      type: object
+      required:
+        - name, address, latitude, longitude, emergencyContactName, emergencyContactPhone
+        - totalBeds, availableBeds, totalIcuBeds, availableIcuBeds, totalVentilators, availableVentilators
+      properties:
+        name: { type: string }
+        address: { type: string }
+        latitude: { type: number }
+        longitude: { type: number }
+        emergencyContactName: { type: string }
+        emergencyContactPhone: { type: string }
+        totalBeds: { type: integer }
+        availableBeds: { type: integer }
+        totalIcuBeds: { type: integer }
+        availableIcuBeds: { type: integer }
+        totalVentilators: { type: integer }
+        availableVentilators: { type: integer }
+    UpdateHospitalRequest:
+      type: object
+      description: All fields optional; at least one required. Availability counters are not editable here — use /beds, /icu, /ventilators.
+      properties:
+        name: { type: string }
+        address: { type: string }
+        latitude: { type: number }
+        longitude: { type: number }
+        emergencyContactName: { type: string }
+        emergencyContactPhone: { type: string }
+        totalBeds: { type: integer }
+        totalIcuBeds: { type: integer }
+        totalVentilators: { type: integer }
+        managedByUserId: { type: string, format: uuid, nullable: true }

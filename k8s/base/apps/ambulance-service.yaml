@@ -1,0 +1,252 @@
+# =========================================================================
+# Ambulance & Emergency Response service — fleet, dispatch workflow, disaster reactions.
+#
+# Objects: ConfigMap (non-secret settings) → Deployment → ClusterIP
+# Service (stable internal DNS name "ambulance-service") → HorizontalPodAutoscaler.
+# =========================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ambulance-service-config
+  labels:
+    app.kubernetes.io/name: ambulance-service
+data:
+  PORT: "8083"
+  DB_NAME: "ambulance_db"
+  # Phase 11: allow Resilience Demo fault injection (/internal/*, which the
+  # gateway never proxies; also requires the CHAOS_TOKEN from the Secret).
+  CHAOS_ENABLED: "true"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ambulance-service
+  labels:
+    app.kubernetes.io/name: ambulance-service
+    app.kubernetes.io/component: backend
+spec:
+  # spec.replicas is intentionally NOT set: the HorizontalPodAutoscaler
+  # below owns the replica count. If it were set here, every
+  # `kubectl apply -k k8s/overlays/local` would reset the count and fight the HPA.
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ambulance-service
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1        # start one new pod before…
+      maxUnavailable: 0  # …taking any old pod away → zero-downtime rollouts
+  template:
+    metadata:
+      annotations:
+        # Phase 10: opt in to Prometheus scraping (see the sentinelcloud-pods
+        # job in k8s/base/monitoring/config/prometheus/prometheus.yml).
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8083"
+        prometheus.io/path: "/metrics"
+      labels:
+        app.kubernetes.io/name: ambulance-service
+        app.kubernetes.io/component: backend
+    spec:
+      automountServiceAccountToken: false # the app never talks to the Kubernetes API
+      # Don't inject Docker-link-style env vars (GATEWAY_PORT=tcp://…,
+      # REDIS_PORT=tcp://… etc.) for every Service in the namespace — they
+      # can silently collide with real settings like REDIS_PORT/RABBITMQ_PORT.
+      # Services are found via DNS instead.
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      # Spread replicas across nodes when there is more than one node;
+      # a no-op on single-node Minikube/Kind (ScheduleAnyway never blocks).
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: ambulance-service
+      # Block startup until Postgres accepts TCP connections. The app's own
+      # waitForDb() only retries for ~30s before exiting, which a cold
+      # cluster (image pulls + initdb) can easily exceed. Reuses the app
+      # image (Alpine busybox ships `nc`), so no extra image is pulled.
+      initContainers:
+        - name: wait-for-postgres
+          image: sentinelcloud/ambulance-service:1.0.0
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "until nc -z -w 2 \"$DB_HOST\" \"$DB_PORT\"; do echo \"waiting for $DB_HOST:$DB_PORT\"; sleep 2; done"]
+          envFrom:
+            - configMapRef:
+                name: sentinelcloud-common
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 32Mi
+      containers:
+        - name: ambulance-service
+          image: sentinelcloud/ambulance-service:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8083
+          envFrom:
+            - configMapRef:
+                name: sentinelcloud-common
+            - configMapRef:
+                name: ambulance-service-config
+          env:
+            - name: CHAOS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelcloud-secrets
+                  key: RESILIENCE_CHAOS_TOKEN
+                  optional: true   # missing → fault injection simply stays disabled
+            # Phase 12: this service's OWN database user (owns only its database),
+            # never the Postgres superuser. Created by config/init-multiple-databases.sh.
+            - name: DB_USER
+              value: ambulance_svc
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelcloud-secrets
+                  key: AMBULANCE_DB_PASSWORD
+            - name: JWT_ACCESS_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelcloud-secrets
+                  key: JWT_ACCESS_SECRET
+            - name: RABBITMQ_USER
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelcloud-secrets
+                  key: RABBITMQ_USER
+            - name: RABBITMQ_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelcloud-secrets
+                  key: RABBITMQ_PASSWORD
+            - name: RABBITMQ_URL
+              value: "amqp://$(RABBITMQ_USER):$(RABBITMQ_PASSWORD)@$(RABBITMQ_HOST):$(RABBITMQ_PORT)"
+          # Startup probe: /health only answers once the HTTP server is listening,
+          # which happens AFTER migrations + seeding (and after waiting for the
+          # migration lock if another replica holds it). Allows up to 2.5 min.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+            failureThreshold: 30
+          # Liveness: process is alive and its event loop responds. No
+          # dependency checks — a Postgres/RabbitMQ outage must NOT restart pods.
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # Readiness: /health/ready requires Postgres; RabbitMQ is best-effort here.
+          # Failing readiness removes the pod from the Service's endpoints
+          # (no traffic) without restarting it.
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # Graceful termination: when a pod is deleted, the kubelet runs
+          # preStop and, in parallel, the control plane removes the pod from
+          # the Service's endpoints. Sleeping first gives kube-proxy time to
+          # stop routing NEW requests here before the app receives SIGTERM
+          # and drains in-flight ones.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "5"]
+          resources:
+            requests:            # what the scheduler reserves; HPA % is relative to this
+              cpu: 100m
+              memory: 128Mi
+            limits:              # hard ceiling: CPU is throttled, memory over-use is OOM-killed
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        # Writable scratch space, since the root filesystem is read-only.
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ambulance-service
+  labels:
+    app.kubernetes.io/name: ambulance-service
+    app.kubernetes.io/component: backend
+spec:
+  # ClusterIP = reachable only inside the cluster, at ambulance-service:8083 (or
+  # ambulance-service.sentinelcloud.svc.cluster.local). kube-proxy load-balances each new
+  # connection across every READY pod matching the selector.
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: ambulance-service
+  ports:
+    - name: http
+      port: 8083
+      targetPort: http
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ambulance-service
+  labels:
+    app.kubernetes.io/name: ambulance-service
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ambulance-service
+  minReplicas: 1
+  maxReplicas: 5
+  # Utilization is measured against the container's resource REQUEST
+  # (not its limit) — e.g. 70% of a 100m request = 70m average CPU.
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0 # react to load spikes immediately
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 30 # add at most 2 pods every 30s
+    scaleDown:
+      stabilizationWindowSeconds: 120 # wait 2 min of low load before removing pods
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60 # remove at most 1 pod per minute

@@ -1,0 +1,253 @@
+# =========================================================================
+# Blood Bank Intelligence service (Spring Boot) — inventory, FEFO reservations, forecasting.
+#
+# Objects: ConfigMap (non-secret settings) → Deployment → ClusterIP
+# Service (stable internal DNS name "blood-bank-service") → HorizontalPodAutoscaler.
+# =========================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: blood-bank-service-config
+  labels:
+    app.kubernetes.io/name: blood-bank-service
+data:
+  PORT: "8084"
+  DB_NAME: "blood_db"
+  # Phase 11: allow Resilience Demo fault injection (/internal/*, which the
+  # gateway never proxies; also requires the CHAOS_TOKEN from the Secret).
+  CHAOS_ENABLED: "true"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: blood-bank-service
+  labels:
+    app.kubernetes.io/name: blood-bank-service
+    app.kubernetes.io/component: backend
+spec:
+  # spec.replicas is intentionally NOT set: the HorizontalPodAutoscaler
+  # below owns the replica count. If it were set here, every
+  # `kubectl apply -k k8s/overlays/local` would reset the count and fight the HPA.
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: blood-bank-service
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1        # start one new pod before…
+      maxUnavailable: 0  # …taking any old pod away → zero-downtime rollouts
+  template:
+    metadata:
+      annotations:
+        # Phase 10: opt in to Prometheus scraping (see the sentinelcloud-pods
+        # job in k8s/base/monitoring/config/prometheus/prometheus.yml).
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8084"
+        prometheus.io/path: "/prometheus"
+      labels:
+        app.kubernetes.io/name: blood-bank-service
+        app.kubernetes.io/component: backend
+    spec:
+      automountServiceAccountToken: false # the app never talks to the Kubernetes API
+      # Don't inject Docker-link-style env vars (GATEWAY_PORT=tcp://…,
+      # REDIS_PORT=tcp://… etc.) for every Service in the namespace — they
+      # can silently collide with real settings like REDIS_PORT/RABBITMQ_PORT.
+      # Services are found via DNS instead.
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      # Spread replicas across nodes when there is more than one node;
+      # a no-op on single-node Minikube/Kind (ScheduleAnyway never blocks).
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: blood-bank-service
+      # Block startup until Postgres accepts TCP connections. The app's own
+      # waitForDb() only retries for ~30s before exiting, which a cold
+      # cluster (image pulls + initdb) can easily exceed. Reuses the app
+      # image (Alpine busybox ships `nc`), so no extra image is pulled.
+      initContainers:
+        - name: wait-for-postgres
+          image: sentinelcloud/blood-bank-service:1.0.0
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "until nc -z -w 2 \"$DB_HOST\" \"$DB_PORT\"; do echo \"waiting for $DB_HOST:$DB_PORT\"; sleep 2; done"]
+          envFrom:
+            - configMapRef:
+                name: sentinelcloud-common
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 32Mi
+      containers:
+        - name: blood-bank-service
+          image: sentinelcloud/blood-bank-service:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8084
+          envFrom:
+            - configMapRef:
+                name: sentinelcloud-common
+            - configMapRef:
+                name: blood-bank-service-config
+          env:
+            - name: CHAOS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelcloud-secrets
+                  key: RESILIENCE_CHAOS_TOKEN
+                  optional: true   # missing → fault injection simply stays disabled
+            # Phase 12: this service's OWN database user (owns only its database),
+            # never the Postgres superuser. Created by config/init-multiple-databases.sh.
+            - name: DB_USER
+              value: blood_bank_svc
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelcloud-secrets
+                  key: BLOOD_BANK_DB_PASSWORD
+            - name: JWT_ACCESS_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelcloud-secrets
+                  key: JWT_ACCESS_SECRET
+            - name: RABBITMQ_USER
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelcloud-secrets
+                  key: RABBITMQ_USER
+            - name: RABBITMQ_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelcloud-secrets
+                  key: RABBITMQ_PASSWORD
+          # Startup probe: Spring Boot + Flyway + Hibernate can need well over a
+          # minute on a laptop-sized node. Liveness/readiness only start once
+          # this succeeds, so a slow boot is never mistaken for a hung JVM.
+          startupProbe:
+            httpGet:
+              path: /health/liveness
+              port: http
+            periodSeconds: 5
+            failureThreshold: 60 # up to 5 minutes
+          # Liveness: "is the JVM wedged?" Deliberately independent of the DB,
+          # so a Postgres outage removes pods from rotation (readiness) rather
+          # than restarting healthy JVMs in a loop.
+          livenessProbe:
+            httpGet:
+              path: /health/liveness
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # Readiness: Spring Boot's readiness group = application readiness state + database (see application.yml).
+          readinessProbe:
+            httpGet:
+              path: /health/readiness
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # Graceful termination: when a pod is deleted, the kubelet runs
+          # preStop and, in parallel, the control plane removes the pod from
+          # the Service's endpoints. Sleeping first gives kube-proxy time to
+          # stop routing NEW requests here before the app receives SIGTERM
+          # and drains in-flight ones.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "5"]
+          resources:
+            requests:            # what the scheduler reserves; HPA % is relative to this
+              cpu: 250m
+              memory: 512Mi
+            limits:              # hard ceiling: CPU is throttled, memory over-use is OOM-killed
+              cpu: 1500m
+              memory: 768Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        # Writable scratch space, since the root filesystem is read-only.
+        - name: tmp
+          emptyDir:
+            sizeLimit: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: blood-bank-service
+  labels:
+    app.kubernetes.io/name: blood-bank-service
+    app.kubernetes.io/component: backend
+spec:
+  # ClusterIP = reachable only inside the cluster, at blood-bank-service:8084 (or
+  # blood-bank-service.sentinelcloud.svc.cluster.local). kube-proxy load-balances each new
+  # connection across every READY pod matching the selector.
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: blood-bank-service
+  ports:
+    - name: http
+      port: 8084
+      targetPort: http
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: blood-bank-service
+  labels:
+    app.kubernetes.io/name: blood-bank-service
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: blood-bank-service
+  minReplicas: 1
+  maxReplicas: 3
+  # Utilization is measured against the container's resource REQUEST
+  # (not its limit) — e.g. 70% of a 100m request = 70m average CPU.
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 80
+  behavior:
+    scaleUp:
+      # JVM start-up and JIT warm-up burn well over 80% of the 250m request
+      # for about a minute; reacting instantly scaled every (re)start to 3
+      # replicas. 90s = only load that lasts longer than start-up scales out.
+      # (The traffic-surge drill targets ambulance-service, which keeps 0.)
+      stabilizationWindowSeconds: 90
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 30 # add at most 2 pods every 30s
+    scaleDown:
+      stabilizationWindowSeconds: 120 # wait 2 min of low load before removing pods
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60 # remove at most 1 pod per minute

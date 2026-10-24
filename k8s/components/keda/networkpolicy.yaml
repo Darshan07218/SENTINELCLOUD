@@ -1,0 +1,23 @@
+# KEDA's operator reads the queue length over AMQP. RabbitMQ only accepts
+# connections from the pods listed in security/network-policies.yaml, so
+# this adds exactly one more: the KEDA operator in the "keda" namespace.
+# (NetworkPolicies add up; the base rules are untouched.)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rabbitmq-from-keda
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: rabbitmq
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: keda
+          podSelector:
+            matchLabels:
+              app: keda-operator
+      ports:
+        - port: 5672

@@ -1,0 +1,15 @@
+{
+  "name": "@sentinelcloud/resilience-service",
+  "version": "1.0.0",
+  "description": "SentinelCloud Phase 11: Resilience Demo control plane. Injects controlled software faults and observes how Kubernetes detects and recovers. Zero runtime dependencies.",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test tests/*.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {}
+}

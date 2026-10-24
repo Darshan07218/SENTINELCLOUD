@@ -1,0 +1,178 @@
+openapi: 3.0.3
+info:
+  title: SentinelCloud Ambulance & Emergency Response Service
+  version: "0.4.0"
+  description: >
+    Ambulance fleet management and the emergency dispatch workflow.
+    Every route requires a Bearer access token. Reachable directly on
+    :8083, and via the API Gateway at /api/v1/ambulances/* (emergencies
+    are nested at /api/v1/ambulances/emergencies/*).
+servers:
+  - url: http://localhost:8083
+    description: Direct to ambulance-service
+  - url: http://localhost:8080/api/v1/ambulances
+    description: Via API Gateway
+security:
+  - bearerAuth: []
+paths:
+  /:
+    post:
+      summary: Register a new ambulance (EMERGENCY_OPERATOR or SYSTEM_ADMIN)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateAmbulanceRequest" }
+      responses:
+        "201": { description: Ambulance created }
+        "409": { description: Vehicle number already registered }
+    get:
+      summary: List ambulances (paginated, optional status filter)
+      responses:
+        "200": { description: Paginated ambulance list }
+  /{id}:
+    get:
+      summary: Get a single ambulance
+      responses:
+        "200": { description: Ambulance found }
+        "404": { description: Not found }
+    put:
+      summary: Update an ambulance's profile fields
+      responses:
+        "200": { description: Updated }
+  /{id}/location:
+    patch:
+      summary: Update an ambulance's current location
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [latitude, longitude]
+              properties: { latitude: { type: number }, longitude: { type: number } }
+      responses:
+        "200": { description: Updated }
+  /{id}/status:
+    patch:
+      summary: Change status, subject to the legal-transition state machine
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [AVAILABLE, DISPATCHED, EN_ROUTE, AT_SCENE, TRANSPORTING, AT_HOSPITAL, OUT_OF_SERVICE]
+      responses:
+        "200": { description: Status changed }
+        "409": { description: Illegal status transition }
+  /{id}/dispatch:
+    post:
+      summary: Manually dispatch a specific AVAILABLE ambulance to a specific ACTIVE emergency
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [emergencyId]
+              properties: { emergencyId: { type: string, format: uuid } }
+      responses:
+        "200": { description: Dispatched }
+        "409": { description: Ambulance not AVAILABLE, or emergency not ACTIVE }
+  /{id}/assign-hospital:
+    patch:
+      summary: Assign a destination hospital to an ambulance
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [hospitalId]
+              properties: { hospitalId: { type: string, format: uuid } }
+      responses:
+        "200": { description: Assigned }
+  /nearest:
+    get:
+      summary: Find nearest AVAILABLE ambulances to a point, ranked by realistic road distance, each with an ETA
+      parameters:
+        - { name: lat, in: query, required: true, schema: { type: number } }
+        - { name: lng, in: query, required: true, schema: { type: number } }
+        - { name: radiusKm, in: query, schema: { type: number, default: 50 } }
+        - { name: limit, in: query, schema: { type: integer, default: 5 } }
+        - { name: equipmentLevel, in: query, schema: { type: string, enum: [BASIC, ADVANCED, CRITICAL_CARE] } }
+      responses:
+        "200": { description: Ranked ambulance list with distanceKm and etaMinutes }
+  /stats/summary:
+    get:
+      summary: Fleet summary — counts by status
+      responses:
+        "200": { description: Summary }
+  /emergencies:
+    post:
+      summary: >
+        Report an emergency. Triggers the automatic dispatch workflow:
+        finds available ambulances, ranks by road distance, assigns the
+        best one, and publishes ambulance.dispatched. Returns
+        `recommendation: null` if nothing was available in range (the
+        emergency stays ACTIVE for manual dispatch or retry).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateEmergencyRequest" }
+      responses:
+        "201": { description: Emergency created (and possibly auto-dispatched) }
+    get:
+      summary: List emergencies (paginated, optional status filter)
+      responses:
+        "200": { description: Paginated emergency list }
+  /emergencies/active:
+    get:
+      summary: Track active emergencies (status ACTIVE or ASSIGNED)
+      responses:
+        "200": { description: Active emergency list }
+  /emergencies/{id}:
+    get:
+      summary: Get a single emergency
+      responses:
+        "200": { description: Emergency found }
+        "404": { description: Not found }
+  /emergencies/{id}/complete:
+    post:
+      summary: Complete an emergency — resolves it and returns the ambulance to AVAILABLE
+      responses:
+        "200": { description: Completed }
+        "409": { description: Emergency has no assigned ambulance to complete }
+  /emergencies/{id}/cancel:
+    post:
+      summary: Cancel an emergency that was reported in error or is no longer needed
+      responses:
+        "200": { description: Cancelled }
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
+  schemas:
+    CreateAmbulanceRequest:
+      type: object
+      required: [vehicleNumber, latitude, longitude, driverName, driverPhone]
+      properties:
+        vehicleNumber: { type: string }
+        latitude: { type: number }
+        longitude: { type: number }
+        driverName: { type: string }
+        driverPhone: { type: string }
+        equipmentLevel: { type: string, enum: [BASIC, ADVANCED, CRITICAL_CARE], default: BASIC }
+    CreateEmergencyRequest:
+      type: object
+      required: [description, latitude, longitude]
+      properties:
+        description: { type: string }
+        latitude: { type: number }
+        longitude: { type: number }
+        severity: { type: string, enum: [LOW, MEDIUM, HIGH, CRITICAL], default: MEDIUM }

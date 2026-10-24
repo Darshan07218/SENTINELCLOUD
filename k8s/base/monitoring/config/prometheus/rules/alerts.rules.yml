@@ -1,0 +1,280 @@
+# =========================================================================
+# SentinelCloud — Prometheus ALERT rules (Phase 10).
+#
+# Prometheus evaluates these every 15s. An expression that stays true
+# for the `for:` duration moves the alert pending → firing and sends it
+# to Alertmanager (grouping, inhibition, silences, notification routing).
+# Firing alerts also show in Grafana's System Health dashboard (ALERTS
+# series) and at Prometheus /alerts.
+#
+# severity: critical = user-facing breakage now
+#           warning  = degradation, or will break soon
+#           info     = worth knowing, no action needed
+#
+# Every alert has a promtool unit test in ../tests/alerts.test.yml:
+#   promtool test rules k8s/base/monitoring/config/prometheus/tests/alerts.test.yml
+#
+# Kubernetes-derived alerts (kube-state-metrics / cAdvisor) set `job` to
+# the SERVICE name (from the deployment / container / HPA name, which all
+# equal it). Otherwise they'd inherit job="kube-state-metrics" from the
+# exporter they were scraped from — misleading in notifications, and it
+# would break Alertmanager's per-service grouping and inhibition.
+#
+# Rules that read kube_* / container_* metrics only exist on Kubernetes
+# (kube-state-metrics + cAdvisor). Under Docker Compose they simply have
+# no data and never fire; everything else works in both.
+# =========================================================================
+groups:
+  # -----------------------------------------------------------------------
+  # Availability
+  # -----------------------------------------------------------------------
+  - name: sentinelcloud.availability
+    rules:
+      - alert: SentinelServiceDown
+        expr: up{job=~"gateway|auth-service|hospital-service|ambulance-service|blood-bank-service|power-service|disaster-service|notification-service"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.job }} is down ({{ $labels.instance }})"
+          description: "Prometheus has failed to scrape {{ $labels.job }} at {{ $labels.instance }} for over 1 minute: the process is not responding on its metrics endpoint."
+          runbook: "docs/PHASE-10-MONITORING.md#alert-sentinelservicedown"
+
+      - alert: SentinelDeploymentUnavailable
+        expr: |
+          label_replace(
+            max by (namespace, deployment) (kube_deployment_status_replicas_available{namespace="sentinelcloud"}) == 0
+              and on (namespace, deployment)
+            max by (namespace, deployment) (kube_deployment_spec_replicas{namespace="sentinelcloud"}) > 0,
+          "job", "$1", "deployment", "(.+)")
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Deployment {{ $labels.deployment }} has no available replicas"
+          description: "Kubernetes reports 0 available (ready) replicas for {{ $labels.deployment }} for 2 minutes. Every request routed to it fails."
+          runbook: "docs/PHASE-10-MONITORING.md#alert-sentineldeploymentunavailable"
+
+      - alert: SentinelDependencyUnreachable
+        expr: sentinel_dependency_up{dependency!="rabbitmq"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.job }} cannot reach {{ $labels.dependency }}"
+          description: "{{ $labels.job }} ({{ $labels.instance }}) has reported {{ $labels.dependency }} unreachable for 2 minutes. Its readiness probe is failing, so Kubernetes has taken it out of rotation."
+          runbook: "docs/PHASE-10-MONITORING.md#alert-sentineldependencyunreachable"
+
+  # -----------------------------------------------------------------------
+  # API golden signals: latency and errors
+  # -----------------------------------------------------------------------
+  - name: sentinelcloud.api
+    rules:
+      - alert: SentinelHighApiLatency
+        # Minimum-traffic guard: one slow request on an idle service is not an incident.
+        expr: sentinel:http_latency_seconds:p95_5m > 1 and on (job) sentinel:http_requests:rate5m > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.job }} p95 latency is {{ $value | humanizeDuration }}"
+          description: "95% of {{ $labels.job }} API requests should finish within 1s; for the last 5 minutes p95 has been {{ $value | humanizeDuration }}."
+          runbook: "docs/PHASE-10-MONITORING.md#alert-sentinelhighapilatency"
+
+      - alert: SentinelHighErrorRate
+        expr: sentinel:http_error_ratio:rate5m > 0.05 and on (job) sentinel:http_requests:rate5m > 0.1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.job }} is failing {{ $value | humanizePercentage }} of requests"
+          description: "More than 5% of {{ $labels.job }} API requests have returned HTTP 5xx for 5 minutes (current: {{ $value | humanizePercentage }})."
+          runbook: "docs/PHASE-10-MONITORING.md#alert-sentinelhigherrorrate"
+
+  # -----------------------------------------------------------------------
+  # Resources (Kubernetes: usage relative to the container's LIMIT)
+  # -----------------------------------------------------------------------
+  - name: sentinelcloud.resources
+    rules:
+      - alert: SentinelHighCpu
+        expr: sentinel:pod_cpu_limit:ratio{namespace="sentinelcloud"} > 0.85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.pod }} is using {{ $value | humanizePercentage }} of its CPU limit"
+          description: "{{ $labels.pod }} ({{ $labels.job }}) has used over 85% of its CPU limit for 5 minutes. Above the limit it gets throttled, and its latency climbs. The HPA should be adding replicas; if it's already at maxReplicas, raise the limit or maxReplicas."
+          runbook: "docs/PHASE-10-MONITORING.md#alert-sentinelhighcpu"
+
+      - alert: SentinelHighMemory
+        expr: sentinel:pod_memory_limit:ratio{namespace="sentinelcloud"} > 0.90
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.pod }} is using {{ $value | humanizePercentage }} of its memory limit"
+          description: "{{ $labels.pod }} ({{ $labels.job }}) has used over 90% of its memory limit for 5 minutes. At 100% the kernel OOM-kills it (the pod restarts with reason OOMKilled)."
+          runbook: "docs/PHASE-10-MONITORING.md#alert-sentinelhighmemory"
+
+      - alert: SentinelNodeEventLoopLag
+        expr: nodejs_eventloop_lag_p99_seconds > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.job }} event loop is blocked ({{ $value | humanizeDuration }} p99)"
+          description: "The Node.js event loop in {{ $labels.instance }} is delayed by {{ $value | humanizeDuration }} at p99: every request on that pod waits at least that long. Usually CPU saturation or a synchronous hot path."
+          runbook: "docs/PHASE-10-MONITORING.md#alert-sentinelhighcpu"
+
+  # -----------------------------------------------------------------------
+  # Kubernetes pod health
+  # -----------------------------------------------------------------------
+  - name: sentinelcloud.kubernetes
+    rules:
+      - alert: SentinelPodCrashLooping
+        expr: label_replace(max by (namespace, pod, container) (kube_pod_container_status_waiting_reason{namespace="sentinelcloud", reason="CrashLoopBackOff"}), "job", "$1", "container", "(.+)") == 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.pod }} is crash-looping"
+          description: "Container {{ $labels.container }} in {{ $labels.pod }} keeps exiting and Kubernetes is backing off restarts (CrashLoopBackOff). Check `kubectl logs {{ $labels.pod }} -n sentinelcloud --previous`."
+          runbook: "docs/PHASE-10-MONITORING.md#alert-sentinelpodcrashlooping"
+
+      - alert: SentinelPodRestartingFrequently
+        expr: label_replace(max by (namespace, pod, container) (increase(kube_pod_container_status_restarts_total{namespace="sentinelcloud"}[15m])), "job", "$1", "container", "(.+)") > 2
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.pod }} restarted {{ $value | printf \"%.0f\" }} times in 15 minutes"
+          description: "Container {{ $labels.container }} in {{ $labels.pod }} is restarting repeatedly (OOMKilled, failing liveness probe, or crashing). It may not have reached CrashLoopBackOff yet."
+          runbook: "docs/PHASE-10-MONITORING.md#alert-sentinelpodcrashlooping"
+
+      - alert: SentinelPodNotReady
+        expr: max by (namespace, pod) (kube_pod_status_ready{namespace="sentinelcloud", condition="false"}) == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.pod }} has not been Ready for 5 minutes"
+          description: "{{ $labels.pod }} is running but failing its readiness probe, so it receives no traffic. Usually a dependency it needs (Postgres/RabbitMQ/Redis) is unreachable."
+          runbook: "docs/PHASE-10-MONITORING.md#alert-sentinelpodnotready"
+
+      - alert: SentinelHpaAtMaxReplicas
+        expr: |
+          label_replace(
+            max by (namespace, horizontalpodautoscaler) (kube_horizontalpodautoscaler_status_current_replicas{namespace="sentinelcloud"})
+              >= on (namespace, horizontalpodautoscaler)
+            max by (namespace, horizontalpodautoscaler) (kube_horizontalpodautoscaler_spec_max_replicas{namespace="sentinelcloud"}),
+          "job", "$1", "horizontalpodautoscaler", "(.+)")
+        for: 10m
+        labels:
+          severity: info
+        annotations:
+          summary: "HPA {{ $labels.horizontalpodautoscaler }} has been at maxReplicas for 10 minutes"
+          description: "The autoscaler can't add more pods. If CPU/latency alerts are also firing, the service needs a higher maxReplicas, more efficient code, or a bigger node."
+          runbook: "docs/PHASE-10-MONITORING.md#alert-sentinelhpaatmaxreplicas"
+
+  # -----------------------------------------------------------------------
+  # Message broker / event pipeline
+  # -----------------------------------------------------------------------
+  - name: sentinelcloud.messaging
+    rules:
+      - alert: SentinelRabbitMQDown
+        expr: up{job="rabbitmq"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "RabbitMQ is down"
+          description: "Prometheus can't reach RabbitMQ's metrics endpoint. Disaster events are not being published or fanned out: no automatic hospital/ambulance/blood/power reactions, and the live dashboard is silent."
+          runbook: "docs/PHASE-10-MONITORING.md#alert-sentinelrabbitmqdown"
+
+      - alert: SentinelServiceLostBrokerConnection
+        expr: sentinel_dependency_up{dependency="rabbitmq"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.job }} is disconnected from RabbitMQ"
+          description: "{{ $labels.job }} ({{ $labels.instance }}) has had no RabbitMQ connection for 2 minutes. It is retrying, but its events are not flowing."
+          runbook: "docs/PHASE-10-MONITORING.md#alert-sentinelrabbitmqdown"
+
+      - alert: SentinelQueueBacklog
+        expr: rabbitmq_detailed_queue_messages_ready > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Queue {{ $labels.queue }} has {{ $value }} messages waiting"
+          description: "Consumers of {{ $labels.queue }} are falling behind: events will be processed late. Scale the consuming service or check its handler errors."
+          runbook: "docs/PHASE-10-MONITORING.md#alert-sentinelqueuebacklog"
+
+      - alert: SentinelQueueWithoutConsumers
+        # q.dead-letters has no consumer by design; SentinelDeadLetters covers it.
+        expr: rabbitmq_detailed_queue_consumers{queue=~"q\\..*", queue!="q.dead-letters"} == 0 and on (vhost, queue) rabbitmq_detailed_queue_messages_ready > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Queue {{ $labels.queue }} has messages but no consumers"
+          description: "Nobody is consuming {{ $labels.queue }}: the service that owns it is down or never registered its consumer."
+          runbook: "docs/PHASE-10-MONITORING.md#alert-sentinelqueuebacklog"
+
+      - alert: SentinelSlowEventProcessing
+        expr: sentinel:event_processing_seconds:p95_5m > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.job }} takes {{ $value | humanizeDuration }} (p95) to process {{ $labels.event_type }}"
+          description: "From publish to handled, {{ $labels.event_type }} events take {{ $value | humanizeDuration }} at p95 in {{ $labels.job }}. Disaster reactions should land in well under 5s."
+          runbook: "docs/PHASE-10-MONITORING.md#alert-sentinelsloweventprocessing"
+
+      - alert: SentinelEventHandlerErrors
+        expr: sum by (job, queue) (sentinel:events_consumed:rate5m{outcome!="success"}) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.job }} is failing to process events from {{ $labels.queue }}"
+          description: "{{ $labels.job }} has been rejecting or failing events from {{ $labels.queue }} for 5 minutes, even after retries. Since Phase 14 the failed events are kept in q.dead-letters (SentinelDeadLetters) and can be replayed once the cause is fixed."
+          runbook: "docs/PHASE-10-MONITORING.md#alert-sentineleventhandlererrors"
+
+      # Phase 14 (docs/PHASE-14-RELIABLE-EVENTS.md): events saved in a
+      # service's outbox but not yet confirmed by RabbitMQ. Every replica of a
+      # service reports the same table, hence max by job.
+      - alert: SentinelOutboxBacklog
+        expr: max by (job) (sentinel_outbox_pending) > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.job }} has {{ $value }} event(s) waiting in its outbox"
+          description: "{{ $labels.job }} saved these changes but RabbitMQ hasn't confirmed their events for 2 minutes. Nothing is lost: the relay retries every 2 s and sends them in order once RabbitMQ is reachable. Other services won't react until then."
+          runbook: "docs/PHASE-14-RELIABLE-EVENTS.md#alert-sentineloutboxbacklog"
+
+      - alert: SentinelDeadLetters
+        expr: rabbitmq_detailed_queue_messages_ready{queue="q.dead-letters"} > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} event(s) in the dead-letter queue"
+          description: "These events failed every retry (or weren't valid events) and are parked in q.dead-letters. List them with GET /api/v1/notifications/dead-letters; replay them with POST /api/v1/notifications/dead-letters/replay once the cause is fixed."
+          runbook: "docs/PHASE-14-RELIABLE-EVENTS.md#alert-sentineldeadletters"
+
+  # -----------------------------------------------------------------------
+  # The monitoring stack itself
+  # -----------------------------------------------------------------------
+  - name: sentinelcloud.meta
+    rules:
+      - alert: SentinelMonitoringTargetDown
+        expr: up{job=~"kube-state-metrics|alertmanager|grafana"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Monitoring component {{ $labels.job }} is down"
+          description: "{{ $labels.job }} is not being scraped, so parts of the dashboards or alerting are blind."
+          runbook: "docs/PHASE-10-MONITORING.md#alert-sentinelmonitoringtargetdown"
