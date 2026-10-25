@@ -148,3 +148,5 @@ reaction.
 | HIGH flood (demo detection, confirmed) | estimate: ~4.6 M people within 15 km, ~230,000 exposed, ~276 casualties → 111 beds, 28 ICU, 10 ambulances (7 in range: 7 sent + radius widened) |
 | Approve | 111 beds + 28 ICU held at Command Hospital Southern Command; network free beds 984 → 873; blood reservations failed legitimately (no single batch of 28 O-/O+ units), plan PARTIAL; follow-up plan proposed for the wider radius |
 | Undo | reservation RELEASED, network free beds back to 984, plan ROLLED_BACK; resolving the disaster expired the follow-up; 0 beds left held |
+| GitHub CI run #18 (push, `9b4930c`) | 18 / 18 push jobs green |
+| GitHub CI run #19 (on demand, `9b4930c`) | **19 / 19 green**, incl. the end-to-end system check (277 s) with the new check 15 on a fresh Compose stack: plan with estimate, beds held on approval, released on undo |
