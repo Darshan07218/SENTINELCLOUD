@@ -25,7 +25,8 @@ Status is updated at the top of each phase's entry as work completes.
 | 15 | Automated response engine: playbooks per disaster type/severity, auto and approval modes, recorded and reversible actions, escalation. See [docs/PHASE-15-RESPONSE-ENGINE.md](PHASE-15-RESPONSE-ENGINE.md). | ✅ Done |
 | 16 | Scenario simulator: scripted disasters played out through the API with their own service account, and background activity (ambulance trips, readings). See [docs/PHASE-16-SIMULATOR.md](PHASE-16-SIMULATOR.md). | ✅ Done |
 | 17 | CI pipeline running `scripts/run-node-tests.sh`, `mvn test`, promtool and `verify-system.sh compose` on every push; KEDA autoscaling on queue length. See [docs/PHASE-17-CI-AND-KEDA.md](PHASE-17-CI-AND-KEDA.md). | ✅ Done |
-| 18 | Real tiled maps (Leaflet) everywhere, incl. a hospital risk map; bed-occupancy forecast (capacity history via trigger, damped Holt smoothing, ETA to the 90 % line) and transformer-risk forecast (trend projection, 0–100 score with reasons). See [docs/PHASE-18-MAPS-AND-FORECASTS.md](PHASE-18-MAPS-AND-FORECASTS.md). | ✅ **Done — this phase** |
+| 18 | Real tiled maps (Leaflet) everywhere, incl. a hospital risk map; bed-occupancy forecast (capacity history via trigger, damped Holt smoothing, ETA to the 90 % line) and transformer-risk forecast (trend projection, 0–100 score with reasons). See [docs/PHASE-18-MAPS-AND-FORECASTS.md](PHASE-18-MAPS-AND-FORECASTS.md). | ✅ Done |
+| 19 | Automatic disaster detection: intake-service polls USGS earthquakes and Open-Meteo rain/wind for the city, stores each event once, auto-confirms CRITICAL, keeps the rest for an operator (Auto-Detection page), creates disasters through the gateway with its own EMERGENCY_OPERATOR account. See [docs/PHASE-19-AUTO-DETECTION.md](PHASE-19-AUTO-DETECTION.md). | ✅ **Done — this phase** |
 
 ## Rule for every phase
 

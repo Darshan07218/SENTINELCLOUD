@@ -10,7 +10,7 @@ import swaggerUi from "swagger-ui-express";
 
 import { initPool, checkDbConnection, waitForDb, withStartupLock, closePool } from "./db.js";
 import { runMigrations } from "./db/migrate.js";
-import { seedDefaultAdmin, seedSimulatorAccount } from "./db/seed.js";
+import { seedDefaultAdmin, seedSimulatorAccount, seedIntakeAccount } from "./db/seed.js";
 import { createUserRepository } from "./repositories/userRepository.js";
 import { createRefreshTokenRepository } from "./repositories/refreshTokenRepository.js";
 import { createAuthRouter } from "./routes/authRoutes.js";
@@ -118,6 +118,7 @@ async function start() {
     await runMigrations(pool);
     await seedDefaultAdmin(pool);
     await seedSimulatorAccount(pool); // Phase 16
+    await seedIntakeAccount(pool); // Phase 19
   });
 
   const userRepository = createUserRepository(pool);

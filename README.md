@@ -269,6 +269,21 @@ A fresh install gets 72 h of synthetic hospital history so the forecast has
 something to show; it is marked as such in the API and on the page.
 Details: [`docs/PHASE-18-MAPS-AND-FORECASTS.md`](docs/PHASE-18-MAPS-AND-FORECASTS.md).
 
+## Automatic disaster detection (Phase 19)
+
+Disasters no longer need someone to report them. **intake-service** watches
+free public feeds for the city: **USGS** earthquakes (every 2 min) and the
+**Open-Meteo** forecast for heavy rain and storm-force wind (every 30 min, IMD
+rainfall categories). Each event is stored once. CRITICAL ones become
+disasters on their own; the rest wait on the **Auto-Detection** page for an
+operator to confirm or dismiss. A confirmed detection is created through the
+gateway with intake's own EMERGENCY_OPERATOR account, and the usual flow
+follows (services react, the response engine proposes a plan). Admins can
+inject a labelled DEMO detection to show it live. Settings:
+`AUTO_CONFIRM_MIN_SEVERITY` (default `CRITICAL`, `NONE` = always ask),
+`INTAKE_SOURCES`, `WATCH_*`. Details:
+[`docs/PHASE-19-AUTO-DETECTION.md`](docs/PHASE-19-AUTO-DETECTION.md).
+
 ## Stopping the stack
 
 ```bash

@@ -56,6 +56,10 @@ export const WRITE_ROLES_BY_PREFIX = {
   response: ["EMERGENCY_OPERATOR", "SYSTEM_ADMIN"],
   // Phase 16: starting a scenario drives the whole platform; SYSTEM_ADMIN only.
   simulator: ["SYSTEM_ADMIN"],
+  // Phase 19: confirming or dismissing a detected disaster is the same
+  // decision as reporting one. Injecting a DEMO detection is SYSTEM_ADMIN-only,
+  // enforced inside intake-service.
+  intake: ["EMERGENCY_OPERATOR", "SYSTEM_ADMIN"],
 };
 
 /** Roles allowed to write under `prefix`; [] (nobody) for anything unknown. */

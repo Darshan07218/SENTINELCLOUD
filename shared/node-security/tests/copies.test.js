@@ -9,7 +9,7 @@ import path from "node:path";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const FILES = ["secrets.js", "audit.js", "jwt.js"];
-const SERVICES = ["gateway", "auth-service", "hospital-service", "ambulance-service", "disaster-service", "notification-service", "resilience-service", "response-service", "simulator-service"];
+const SERVICES = ["gateway", "auth-service", "hospital-service", "ambulance-service", "disaster-service", "notification-service", "resilience-service", "response-service", "simulator-service", "intake-service"];
 
 for (const svc of SERVICES) {
   test(`${svc} has identical copies of the shared security modules`, () => {

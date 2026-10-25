@@ -49,6 +49,7 @@ $Images = [ordered]@{
   "resilience-service"   = "services/resilience-service"
   "response-service"     = "services/response-service"
   "simulator-service"    = "services/simulator-service"
+  "intake-service"       = "services/intake-service"
   "frontend"             = "frontend"
 }
 

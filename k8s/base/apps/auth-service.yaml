@@ -155,6 +155,17 @@ spec:
                 secretKeyRef:
                   name: sentinelcloud-secrets
                   key: SIMULATOR_PASSWORD
+            # Phase 19: intake-service's service account (EMERGENCY_OPERATOR).
+            - name: INTAKE_EMAIL
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelcloud-secrets
+                  key: INTAKE_EMAIL
+            - name: INTAKE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelcloud-secrets
+                  key: INTAKE_PASSWORD
           # Startup probe: /health only answers once the HTTP server is listening,
           # which happens AFTER migrations + seeding (and after waiting for the
           # migration lock if another replica holds it). Allows up to 2.5 min.

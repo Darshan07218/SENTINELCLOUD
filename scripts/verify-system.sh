@@ -17,14 +17,14 @@
 #                    inside containers; needs network for npm/Maven).
 #   --skip-db-suite  skip tests/db/realPostgres.test.js (throwaway Postgres).
 #
-# The 13 checks (each prints PASS/FAIL with the evidence):
+# The 14 checks (each prints PASS/FAIL with the evidence):
 #    1 Docker Compose startup        8 Disaster event flow (fan-out + fan-in)
 #    2 Database initialisation       9 Message broker
 #    3 Authentication                10 Dashboard (frontend + live WebSocket)
 #    4 Hospital service              11 Kubernetes deployment
 #    5 Ambulance service             12 Monitoring (Prometheus/Alertmanager/Grafana)
 #    6 Blood service                 13 Failure simulation
-#    7 Power service
+#    7 Power service                 14 Automatic detection (Phase 19)
 # In `compose` mode check 11 is reported as SKIP; in `k8s` mode check 1 is.
 #
 # Requirements: bash 4+, Docker with Compose v2, curl, Node.js 20+ (22+ for
@@ -340,6 +340,49 @@ api_checks() { # label envfile
   fi
   ((ok)) && record "10 Dashboard" PASS "$label: frontend served, 8/8 services ready, authenticated live-feed WebSocket handshake ${why[*]:-OK}" \
          || record "10 Dashboard" FAIL "$label: ${why[*]}"
+
+  # ---- 14 Automatic detection (Phase 19) ---------------------------------
+  # DEMO detections go through the same pipeline as USGS / Open-Meteo ones,
+  # without depending on a real earthquake or storm happening right now.
+  step "[$label] 14 Automatic detection"
+  ok=1 why=()
+  local created=() dtid dsid dstatus
+  http GET /intake/overview
+  [[ $HTTP_CODE == 200 && $(printf '%s' "$HTTP_BODY" | js 'd.sources.length') == 2 ]] || { ok=0; why+=("overview → $HTTP_CODE"); }
+  # HIGH: waits for an operator; confirming creates the disaster through the gateway.
+  http POST /intake/demo '{"type":"FLOOD","severity":"HIGH"}'
+  dtid=$(printf '%s' "$HTTP_BODY" | js 'd.detection&&d.detection.id')
+  [[ $HTTP_CODE == 201 && $(printf '%s' "$HTTP_BODY" | js 'd.detection.status') == PENDING ]] || { ok=0; why+=("demo HIGH → $HTTP_CODE"); }
+  if [[ -n "$dtid" ]]; then
+    http POST "/intake/detections/$dtid/confirm" '{"note":"verify-system"}'
+    dsid=$(printf '%s' "$HTTP_BODY" | js 'd.detection&&d.detection.disasterId')
+    [[ $HTTP_CODE == 200 && -n "$dsid" ]] || { ok=0; why+=("confirm → $HTTP_CODE"); }
+    http POST "/intake/detections/$dtid/confirm" '{}'
+    [[ $HTTP_CODE == 409 ]] || { ok=0; why+=("second confirm → $HTTP_CODE (want 409)"); }
+    if [[ -n "$dsid" ]]; then
+      created+=("$dsid")
+      http GET "/disasters/$dsid"
+      [[ $HTTP_CODE == 200 && $(printf '%s' "$HTTP_BODY" | js 'd.disaster.description.startsWith("[Auto-detected · DEMO]")') == true ]] || { ok=0; why+=("created disaster → $HTTP_CODE"); }
+    fi
+  fi
+  # CRITICAL: confirmed by the policy alone.
+  http POST /intake/demo '{"type":"EARTHQUAKE","severity":"CRITICAL"}'
+  dstatus=$(printf '%s' "$HTTP_BODY" | js 'd.detection&&d.detection.status')
+  [[ $HTTP_CODE == 201 && $dstatus == AUTO_CONFIRMED ]] || { ok=0; why+=("demo CRITICAL → $HTTP_CODE $dstatus (want AUTO_CONFIRMED)"); }
+  dsid=$(printf '%s' "$HTTP_BODY" | js 'd.detection&&d.detection.disasterId')
+  [[ -n "$dsid" ]] && created+=("$dsid")
+  # LOW: dismissed by the operator; nothing is created.
+  http POST /intake/demo '{"type":"LANDSLIDE","severity":"LOW"}'
+  dtid=$(printf '%s' "$HTTP_BODY" | js 'd.detection&&d.detection.id')
+  http POST "/intake/detections/$dtid/dismiss" '{"note":"verify-system"}'
+  [[ $HTTP_CODE == 200 && $(printf '%s' "$HTTP_BODY" | js 'd.detection.status+":"+(d.detection.disasterId||"none")') == DISMISSED:none ]] || { ok=0; why+=("dismiss → $HTTP_CODE"); }
+  # Close the disasters this check created.
+  for dsid in "${created[@]}"; do
+    http POST "/disasters/$dsid/status" '{"status":"CONTAINED","note":"verify-system cleanup"}'
+    http POST "/disasters/$dsid/status" '{"status":"RESOLVED","note":"verify-system cleanup"}'
+  done
+  ((ok)) && record "14 Automatic detection" PASS "$label: HIGH detection confirmed → disaster created via the gateway (second confirm 409), CRITICAL auto-confirmed, LOW dismissed" \
+         || record "14 Automatic detection" FAIL "$label: ${why[*]}"
 }
 
 # ======================================================================
@@ -392,12 +435,12 @@ compose_run() {
   local pu dbs roles migr ok=1 why=()
   pu=$(envval .env POSTGRES_USER); pu=${pu:-sentinel}
   dbs=$(docker compose exec -T postgres psql -U "$pu" -d postgres -Atc "SELECT string_agg(datname || ':' || pg_get_userbyid(datdba), ' ' ORDER BY datname) FROM pg_database WHERE datname LIKE '%\_db'" 2>&1)
-  for pair in ambulance_db:ambulance_svc auth_db:auth_svc blood_db:blood_bank_svc disaster_db:disaster_svc hospital_db:hospital_svc power_db:power_svc response_db:response_svc; do
+  for pair in ambulance_db:ambulance_svc auth_db:auth_svc blood_db:blood_bank_svc disaster_db:disaster_svc hospital_db:hospital_svc power_db:power_svc response_db:response_svc intake_db:intake_svc; do
     [[ " $dbs " == *" $pair "* ]] || { ok=0; why+=("missing $pair"); }
   done
   roles=$(docker compose exec -T postgres psql -U "$pu" -d postgres -Atc "SELECT count(*) FROM pg_roles WHERE rolname LIKE '%\_svc' AND NOT rolsuper AND NOT rolcreatedb AND NOT rolcreaterole")
-  [[ ${roles//[^0-9]/} == 7 ]] || { ok=0; why+=("least-privilege roles: $roles/7"); }
-  for d in auth_db hospital_db ambulance_db disaster_db response_db; do
+  [[ ${roles//[^0-9]/} == 8 ]] || { ok=0; why+=("least-privilege roles: $roles/8"); }
+  for d in auth_db hospital_db ambulance_db disaster_db response_db intake_db; do
     migr=$(docker compose exec -T postgres psql -U "$pu" -d "$d" -Atc "SELECT count(*) FROM schema_migrations" 2>&1)
     [[ ${migr//[^0-9]/} -ge 1 ]] || { ok=0; why+=("$d schema_migrations: $migr"); }
   done
@@ -405,7 +448,7 @@ compose_run() {
     migr=$(docker compose exec -T postgres psql -U "$pu" -d "$d" -Atc "SELECT count(*) FROM flyway_schema_history WHERE success" 2>&1)
     [[ ${migr//[^0-9]/} -ge 3 ]] || { ok=0; why+=("$d flyway: $migr"); }
   done
-  ((ok)) && record "2 Database initialisation" PASS "7 databases each owned by its own non-superuser role; Node migrations + Flyway V1–V3 applied" \
+  ((ok)) && record "2 Database initialisation" PASS "8 databases each owned by its own non-superuser role; Node migrations + Flyway V1–V3 applied" \
          || record "2 Database initialisation" FAIL "${why[*]}"
 
   api_checks compose .env
@@ -476,8 +519,8 @@ db_suite() {
   local name=sc-verify-pg port=55439 pw
   pw=$(node -p 'require("crypto").randomBytes(18).toString("hex")')
   docker rm -f $name >/dev/null 2>&1
-  local envs=(-e POSTGRES_USER=sentinel -e POSTGRES_PASSWORD="$pw" -e POSTGRES_SERVICE_DATABASES="auth_db:auth_svc:AUTH_DB_PASSWORD,hospital_db:hospital_svc:HOSPITAL_DB_PASSWORD,ambulance_db:ambulance_svc:AMBULANCE_DB_PASSWORD,blood_db:blood_bank_svc:BLOOD_BANK_DB_PASSWORD,power_db:power_svc:POWER_DB_PASSWORD,disaster_db:disaster_svc:DISASTER_DB_PASSWORD,response_db:response_svc:RESPONSE_DB_PASSWORD")
-  for v in AUTH HOSPITAL AMBULANCE BLOOD_BANK POWER DISASTER RESPONSE; do envs+=(-e "${v}_DB_PASSWORD=${v}-$pw"); export "${v}_DB_PASSWORD=${v}-$pw"; done
+  local envs=(-e POSTGRES_USER=sentinel -e POSTGRES_PASSWORD="$pw" -e POSTGRES_SERVICE_DATABASES="auth_db:auth_svc:AUTH_DB_PASSWORD,hospital_db:hospital_svc:HOSPITAL_DB_PASSWORD,ambulance_db:ambulance_svc:AMBULANCE_DB_PASSWORD,blood_db:blood_bank_svc:BLOOD_BANK_DB_PASSWORD,power_db:power_svc:POWER_DB_PASSWORD,disaster_db:disaster_svc:DISASTER_DB_PASSWORD,response_db:response_svc:RESPONSE_DB_PASSWORD,intake_db:intake_svc:INTAKE_DB_PASSWORD")
+  for v in AUTH HOSPITAL AMBULANCE BLOOD_BANK POWER DISASTER RESPONSE INTAKE; do envs+=(-e "${v}_DB_PASSWORD=${v}-$pw"); export "${v}_DB_PASSWORD=${v}-$pw"; done
   docker run -d --name $name "${envs[@]}" -p 127.0.0.1:$port:5432 -v "$ROOT/infrastructure/postgres-init:/docker-entrypoint-initdb.d:ro" postgres:16-alpine >/dev/null
   wait_until 90 "throwaway postgres" docker exec $name pg_isready -h 127.0.0.1 -U sentinel
   local out
@@ -492,7 +535,7 @@ db_suite() {
 unit_tests() {
   step "Extra: unit tests inside containers (npm ci + node --test; mvn test)"
   local failed=() passed=0
-  for s in gateway auth-service hospital-service ambulance-service disaster-service notification-service resilience-service response-service simulator-service; do
+  for s in gateway auth-service hospital-service ambulance-service disaster-service notification-service resilience-service response-service simulator-service intake-service; do
     if docker run --rm -v "$ROOT:/src" -w "/src/services/$s" node:22-alpine sh -c \
       'cp -r . /tmp/w && cd /tmp/w && (npm ci --no-audit --no-fund >/dev/null 2>&1 || npm install --no-audit --no-fund >/dev/null 2>&1) && node --test tests/*.test.js' >/tmp/sc-unit-$s.log 2>&1; then
       passed=$((passed + $(awk '/^# pass /{print $3}' /tmp/sc-unit-$s.log | tail -1)))

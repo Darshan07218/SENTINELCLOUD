@@ -37,6 +37,8 @@ const SERVICES = {
   response: process.env.RESPONSE_SERVICE_URL || "http://response-service:8089",
   // Phase 16: the scenario simulator (admin-only for writes).
   simulator: process.env.SIMULATOR_SERVICE_URL || "http://simulator-service:8090",
+  // Phase 19: automatic disaster detection (confirm/dismiss detections).
+  intake: process.env.INTAKE_SERVICE_URL || "http://intake-service:8091",
 };
 const KNOWN_PREFIXES = new Set(Object.keys(SERVICES));
 

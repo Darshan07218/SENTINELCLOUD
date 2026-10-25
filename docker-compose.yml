@@ -56,7 +56,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is missing — run ./scripts/generate-secrets.sh compose}
       # Phase 12: one database AND one login role per service, "db:user:PASSWORD_VAR"
       # (infrastructure/postgres-init/init-multiple-databases.sh).
-      POSTGRES_SERVICE_DATABASES: auth_db:auth_svc:AUTH_DB_PASSWORD,hospital_db:hospital_svc:HOSPITAL_DB_PASSWORD,ambulance_db:ambulance_svc:AMBULANCE_DB_PASSWORD,blood_db:blood_bank_svc:BLOOD_BANK_DB_PASSWORD,power_db:power_svc:POWER_DB_PASSWORD,disaster_db:disaster_svc:DISASTER_DB_PASSWORD,response_db:response_svc:RESPONSE_DB_PASSWORD
+      POSTGRES_SERVICE_DATABASES: auth_db:auth_svc:AUTH_DB_PASSWORD,hospital_db:hospital_svc:HOSPITAL_DB_PASSWORD,ambulance_db:ambulance_svc:AMBULANCE_DB_PASSWORD,blood_db:blood_bank_svc:BLOOD_BANK_DB_PASSWORD,power_db:power_svc:POWER_DB_PASSWORD,disaster_db:disaster_svc:DISASTER_DB_PASSWORD,response_db:response_svc:RESPONSE_DB_PASSWORD,intake_db:intake_svc:INTAKE_DB_PASSWORD
       AUTH_DB_PASSWORD: ${AUTH_DB_PASSWORD:?AUTH_DB_PASSWORD is missing — run ./scripts/generate-secrets.sh compose}
       HOSPITAL_DB_PASSWORD: ${HOSPITAL_DB_PASSWORD:?HOSPITAL_DB_PASSWORD is missing — run ./scripts/generate-secrets.sh compose}
       AMBULANCE_DB_PASSWORD: ${AMBULANCE_DB_PASSWORD:?AMBULANCE_DB_PASSWORD is missing — run ./scripts/generate-secrets.sh compose}
@@ -64,6 +64,7 @@ services:
       POWER_DB_PASSWORD: ${POWER_DB_PASSWORD:?POWER_DB_PASSWORD is missing — run ./scripts/generate-secrets.sh compose}
       DISASTER_DB_PASSWORD: ${DISASTER_DB_PASSWORD:?DISASTER_DB_PASSWORD is missing — run ./scripts/generate-secrets.sh compose}
       RESPONSE_DB_PASSWORD: ${RESPONSE_DB_PASSWORD:?RESPONSE_DB_PASSWORD is missing — run ./scripts/generate-secrets.sh compose}
+      INTAKE_DB_PASSWORD: ${INTAKE_DB_PASSWORD:?INTAKE_DB_PASSWORD is missing — run ./scripts/generate-secrets.sh compose}
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:5432:5432"
     volumes:
@@ -236,6 +237,9 @@ services:
       # Phase 16: the simulator's service account (seeded and kept in sync on start).
       SIMULATOR_EMAIL: ${SIMULATOR_EMAIL:-simulator@sentinelcloud.local}
       SIMULATOR_PASSWORD: ${SIMULATOR_PASSWORD:?SIMULATOR_PASSWORD is missing — run ./scripts/generate-secrets.sh compose}
+      # Phase 19: intake-service's service account (EMERGENCY_OPERATOR).
+      INTAKE_EMAIL: ${INTAKE_EMAIL:-intake@sentinelcloud.local}
+      INTAKE_PASSWORD: ${INTAKE_PASSWORD:?INTAKE_PASSWORD is missing — run ./scripts/generate-secrets.sh compose}
       # Phase 12: refresh-token cookie. Local Compose is plain HTTP, so not "Secure".
       COOKIE_SECURE: "false"
       TRUST_PROXY_HOPS: "1"   # the gateway sets X-Forwarded-For
@@ -436,6 +440,32 @@ services:
       JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?JWT_ACCESS_SECRET is missing — run ./scripts/generate-secrets.sh compose}
     networks: [sentinelcloud-net]
 
+  # Phase 19: automatic disaster detection (docs/PHASE-19-AUTO-DETECTION.md).
+  # Polls USGS and Open-Meteo, creates disasters through the gateway with
+  # its own service account. INTAKE_SOURCES=none turns the feeds off.
+  intake-service:
+    build: ./services/intake-service
+    container_name: sentinelcloud-intake-service
+    restart: unless-stopped
+    <<: *hardening
+    environment:
+      PORT: 8091
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: intake_svc
+      DB_PASSWORD: ${INTAKE_DB_PASSWORD:?INTAKE_DB_PASSWORD is missing — run ./scripts/generate-secrets.sh compose}
+      DB_NAME: intake_db
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?JWT_ACCESS_SECRET is missing — run ./scripts/generate-secrets.sh compose}
+      GATEWAY_URL: http://gateway:8080/api/v1
+      INTAKE_EMAIL: ${INTAKE_EMAIL:-intake@sentinelcloud.local}
+      INTAKE_PASSWORD: ${INTAKE_PASSWORD:?INTAKE_PASSWORD is missing — run ./scripts/generate-secrets.sh compose}
+      AUTO_CONFIRM_MIN_SEVERITY: ${AUTO_CONFIRM_MIN_SEVERITY:-CRITICAL}
+      INTAKE_SOURCES: ${INTAKE_SOURCES:-usgs,open-meteo}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [sentinelcloud-net]
+
   # =======================================================================
   # API Gateway — single ingress; started after the domain services so
   # its first /health/services poll has something to actually reach.
@@ -463,6 +493,7 @@ services:
       RESILIENCE_SERVICE_URL: http://resilience-service:8088
       RESPONSE_SERVICE_URL: http://response-service:8089
       SIMULATOR_SERVICE_URL: http://simulator-service:8090
+      INTAKE_SERVICE_URL: http://intake-service:8091
       # ---- Phase 12 ----
       # Browsers talk to the gateway directly here (no nginx in front), so
       # NO X-Forwarded-For hop is trusted: a client can't spoof its IP.
@@ -493,6 +524,8 @@ services:
       response-service:
         condition: service_started
       simulator-service:
+        condition: service_started
+      intake-service:
         condition: service_started
     networks: [sentinelcloud-net]
 

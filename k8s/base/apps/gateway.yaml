@@ -25,6 +25,7 @@ data:
   RESILIENCE_SERVICE_URL: "http://resilience-service:8088"
   RESPONSE_SERVICE_URL: "http://response-service:8089"
   SIMULATOR_SERVICE_URL: "http://simulator-service:8090"
+  INTAKE_SERVICE_URL: "http://intake-service:8091"
   # ---- Phase 12 ----
   # One reverse proxy (the frontend's nginx) sits in front of the gateway,
   # so exactly one X-Forwarded-For hop is trusted when working out the

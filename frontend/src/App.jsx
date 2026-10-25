@@ -13,6 +13,7 @@ import PowerDashboard from "./pages/PowerDashboard.jsx";
 import EmergencyDashboard from "./pages/EmergencyDashboard.jsx";
 import ResiliencePage from "./pages/ResiliencePage.jsx";
 import SimulatorPage from "./pages/SimulatorPage.jsx";
+import DetectionPage from "./pages/DetectionPage.jsx";
 import UsersPage from "./pages/UsersPage.jsx";
 import { Backdrop, BrandMark, Icon } from "./components/ui.jsx";
 
@@ -22,6 +23,7 @@ const NAV = [
     items: [
       { to: "/", label: "Command Center", icon: "command" },
       { to: "/emergency", label: "Emergency", icon: "siren" },
+      { to: "/detection", label: "Auto-Detection", icon: "radar" },
     ],
   },
   {
@@ -211,6 +213,15 @@ function AppShell() {
         element={
           <ProtectedRoute>
             <EmergencyDashboard />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/detection"
+        element={
+          // Phase 19: everyone sees what was detected; confirming is for operators.
+          <ProtectedRoute>
+            <DetectionPage />
           </ProtectedRoute>
         }
       />

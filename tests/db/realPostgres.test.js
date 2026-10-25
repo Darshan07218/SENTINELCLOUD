@@ -43,6 +43,7 @@ const DATABASES = {
   power: { db: "power_db", user: "power_svc", pw: "POWER_DB_PASSWORD" },
   disaster: { db: "disaster_db", user: "disaster_svc", pw: "DISASTER_DB_PASSWORD" },
   response: { db: "response_db", user: "response_svc", pw: "RESPONSE_DB_PASSWORD" }, // Phase 15
+  intake: { db: "intake_db", user: "intake_svc", pw: "INTAKE_DB_PASSWORD" }, // Phase 19
 };
 
 const pools = {};
@@ -117,6 +118,7 @@ describe("real PostgreSQL 16", { skip: !ENABLED && "set SC_DB_TEST=1 SC_DB_TEST_
       ["ambulance", "ambulance-service"],
       ["disaster", "disaster-service"],
       ["response", "response-service"],
+      ["intake", "intake-service"],
     ]) {
       test(`${svc}: every migration applies as ${DATABASES[key].user}, and a second run is a no-op`, async () => {
         const { runMigrations } = await importFile(path.join(SVC(svc), "src/db/migrate.js"));
@@ -816,6 +818,87 @@ describe("real PostgreSQL 16", { skip: !ENABLED && "set SC_DB_TEST=1 SC_DB_TEST_
       const replies = await pool.query("SELECT envelope FROM outbox WHERE routing_key = 'command.succeeded' AND envelope->>'correlationId' = $1", [commandId]);
       assert.equal(replies.rows.length, 2, "the reply is sent again for the duplicate");
       assert.deepEqual(replies.rows[0].envelope.payload.result.emergencyIds, replies.rows[1].envelope.payload.result.emergencyIds);
+    });
+  });
+
+  // -------------------------------------------------------------------
+  // Phase 19: intake-service's detections on real SQL.
+  // -------------------------------------------------------------------
+  describe("Phase 19: automatic detection (intake_db)", () => {
+    let repo;
+    const candidate = (over = {}) => ({
+      source: "USGS",
+      externalId: `us7000${randomUUID().slice(0, 6)}`,
+      type: "EARTHQUAKE",
+      severity: "MEDIUM",
+      latitude: 17.4,
+      longitude: 73.75,
+      radiusKm: 50,
+      title: "M4.8 earthquake, Koyna",
+      description: "M4.8 earthquake near Koyna (test).",
+      details: { magnitude: 4.8 },
+      observedAt: new Date().toISOString(),
+      ...over,
+    });
+    before(async () => {
+      const { runMigrations } = await importFile(path.join(SVC("intake-service"), "src", "db", "migrate.js"));
+      await quietly(() => runMigrations(pools.intake));
+      const { createDetectionRepository } = await importFile(path.join(SVC("intake-service"), "src", "repositories", "detectionRepository.js"));
+      repo = createDetectionRepository(pools.intake);
+    });
+
+    test("the same source event is stored once, also when two pollers insert it at the same time", async () => {
+      const c = candidate();
+      const results = await Promise.all([repo.insertIfNew(c), repo.insertIfNew(c), repo.insertIfNew(c)]);
+      assert.equal(results.filter(Boolean).length, 1);
+      const stored = results.find(Boolean);
+      assert.equal(stored.status, "PENDING");
+      assert.equal(stored.details.magnitude, 4.8);
+      assert.equal(await repo.insertIfNew(c), null);
+      // The same id from a different source is a different event.
+      assert.ok(await repo.insertIfNew({ ...c, source: "OPEN_METEO" }));
+    });
+
+    test("claiming for confirmation is atomic: of five concurrent claims exactly one wins", async () => {
+      const d = await repo.insertIfNew(candidate());
+      const claims = await Promise.all(Array.from({ length: 5 }, () => repo.transition(d.id, ["PENDING", "FAILED"], { status: "CONFIRMING", decidedBy: "op@example.com" })));
+      assert.equal(claims.filter(Boolean).length, 1);
+      const done = await repo.transition(d.id, ["CONFIRMING"], { status: "CONFIRMED", disasterId: randomUUID() });
+      assert.equal(done.status, "CONFIRMED");
+      assert.equal(done.decidedBy, "op@example.com", "kept from the claim");
+      assert.equal(await repo.transition(d.id, ["PENDING", "FAILED"], { status: "DISMISSED" }), null);
+    });
+
+    test("the CHECK constraints reject unknown statuses and severities", async () => {
+      const d = await repo.insertIfNew(candidate());
+      await assert.rejects(repo.transition(d.id, ["PENDING"], { status: "MAYBE" }), (err) => err.code === "23514");
+      await assert.rejects(repo.insertIfNew(candidate({ severity: "EXTREME" })), (err) => err.code === "23514");
+    });
+
+    test("stale PENDING detections expire, and an interrupted CONFIRMING becomes retryable", async () => {
+      const old = await repo.insertIfNew(candidate());
+      await pools.intake.query("UPDATE detections SET detected_at = now() - interval '13 hours' WHERE id = $1", [old.id]);
+      const stuck = await repo.insertIfNew(candidate());
+      await repo.transition(stuck.id, ["PENDING"], { status: "CONFIRMING", decidedBy: "op" });
+      await pools.intake.query("UPDATE detections SET decided_at = now() - interval '10 minutes' WHERE id = $1", [stuck.id]);
+      assert.ok((await repo.expirePending(12)) >= 1);
+      assert.equal((await repo.findById(old.id)).status, "EXPIRED");
+      assert.ok((await repo.failStuckConfirming(5)) >= 1);
+      assert.equal((await repo.findById(stuck.id)).status, "FAILED");
+    });
+
+    test("source status: a failed poll keeps the last good reading and count", async () => {
+      await repo.recordPoll("OPEN_METEO", { ok: true, found: 1, reading: { rain24hMm: 80.5, maxGustKmh: 40 } });
+      await repo.recordPoll("OPEN_METEO", { ok: false, error: "HTTP 503" });
+      const s = (await repo.sources()).find((x) => x.source === "OPEN_METEO");
+      assert.equal(s.lastError, "HTTP 503");
+      assert.equal(s.lastFound, 1);
+      assert.equal(s.reading.rain24hMm, 80.5);
+      assert.ok(s.lastOkAt && s.lastPolledAt >= s.lastOkAt);
+      await repo.recordPoll("OPEN_METEO", { ok: true, found: 0, reading: { rain24hMm: 2, maxGustKmh: 20 } });
+      const again = (await repo.sources()).find((x) => x.source === "OPEN_METEO");
+      assert.equal(again.lastError, null);
+      assert.equal(again.reading.rain24hMm, 2);
     });
   });
 });

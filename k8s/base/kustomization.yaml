@@ -40,6 +40,8 @@ resources:
   - apps/response-service.yaml
   # Scenario simulator (Phase 16)
   - apps/simulator-service.yaml
+  # Automatic disaster detection (Phase 19)
+  - apps/intake-service.yaml
   # Monitoring & observability (Phase 10)
   - monitoring/prometheus.yaml
   - monitoring/alertmanager.yaml

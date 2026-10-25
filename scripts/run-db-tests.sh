@@ -20,7 +20,7 @@ PORT="${SC_DB_TEST_PORT:-55432}"
 # host's Docker needs e.g. SC_DB_TEST_BIND=0.0.0.0 SC_DB_TEST_HOST=host.docker.internal.
 BIND="${SC_DB_TEST_BIND:-127.0.0.1}"
 HOST="${SC_DB_TEST_HOST:-127.0.0.1}"
-DATABASES=(AUTH:auth_db:auth_svc HOSPITAL:hospital_db:hospital_svc AMBULANCE:ambulance_db:ambulance_svc BLOOD_BANK:blood_db:blood_bank_svc POWER:power_db:power_svc DISASTER:disaster_db:disaster_svc RESPONSE:response_db:response_svc)
+DATABASES=(AUTH:auth_db:auth_svc HOSPITAL:hospital_db:hospital_svc AMBULANCE:ambulance_db:ambulance_svc BLOOD_BANK:blood_db:blood_bank_svc POWER:power_db:power_svc DISASTER:disaster_db:disaster_svc RESPONSE:response_db:response_svc INTAKE:intake_db:intake_svc)
 
 rand() { node -p 'require("crypto").randomBytes(16).toString("hex")'; }
 cleanup() { docker rm -f "$NAME" >/dev/null 2>&1 || true; }

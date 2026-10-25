@@ -62,6 +62,8 @@ images:
     newTag: "1.0.0"
   - name: sentinelcloud/simulator-service
     newTag: "1.0.0"
+  - name: sentinelcloud/intake-service
+    newTag: "1.0.0"
 
 # Phase 12: the local cluster is served over plain HTTP (http://localhost:30080),
 # where a Secure cookie would never be sent back. Only this overlay relaxes it;

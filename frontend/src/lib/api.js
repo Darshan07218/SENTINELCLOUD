@@ -348,3 +348,34 @@ export function stopSimulatorScenario(accessToken) {
 export function setSimulatorAmbient(accessToken, enabled) {
   return request("/simulator/ambient", { method: "POST", accessToken, body: { enabled } });
 }
+
+// ---------------------------------------------------------------------
+// Automatic disaster detection (Phase 19) — intake-service via the gateway.
+// Reading: any signed-in user. Confirm / dismiss / poll: EMERGENCY_OPERATOR
+// or SYSTEM_ADMIN. Demo detections: SYSTEM_ADMIN.
+// ---------------------------------------------------------------------
+export function fetchIntakeOverview(accessToken) {
+  return request("/intake/overview", { accessToken });
+}
+
+export function fetchDetections(accessToken, { status, limit = 50 } = {}) {
+  const qs = new URLSearchParams({ limit: String(limit) });
+  if (status) qs.set("status", status);
+  return request(`/intake/detections?${qs}`, { accessToken });
+}
+
+export function confirmDetection(accessToken, id, note) {
+  return request(`/intake/detections/${id}/confirm`, { method: "POST", accessToken, body: note ? { note } : {} });
+}
+
+export function dismissDetection(accessToken, id, note) {
+  return request(`/intake/detections/${id}/dismiss`, { method: "POST", accessToken, body: note ? { note } : {} });
+}
+
+export function pollIntakeSources(accessToken) {
+  return request("/intake/poll", { method: "POST", accessToken });
+}
+
+export function injectDemoDetection(accessToken, { type, severity }) {
+  return request("/intake/demo", { method: "POST", accessToken, body: { type, severity } });
+}

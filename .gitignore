@@ -1,6 +1,11 @@
 # Environment files (never commit real secrets)
 .env
 **/.env
+# Also temp/backup copies such as .env.XXXXXX left by an interrupted generate-secrets.sh run.
+.env.*
+**/.env.*
+k8s/overlays/local/secrets.env.*
+!k8s/overlays/local/secrets.env.example
 !.env.example
 !**/.env.example
 

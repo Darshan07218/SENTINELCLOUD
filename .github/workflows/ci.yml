@@ -106,7 +106,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: [gateway, auth-service, hospital-service, ambulance-service, blood-bank-service, power-service, disaster-service, notification-service, resilience-service, response-service, simulator-service, frontend]
+        image: [gateway, auth-service, hospital-service, ambulance-service, blood-bank-service, power-service, disaster-service, notification-service, resilience-service, response-service, simulator-service, intake-service, frontend]
     steps:
       - uses: actions/checkout@v5
       - name: docker build

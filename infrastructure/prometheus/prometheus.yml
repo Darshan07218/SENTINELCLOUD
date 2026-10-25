@@ -47,6 +47,8 @@ scrape_configs:
     static_configs: [{ targets: ["response-service:8089"] }]
   - job_name: simulator-service
     static_configs: [{ targets: ["simulator-service:8090"] }]
+  - job_name: intake-service
+    static_configs: [{ targets: ["intake-service:8091"] }]
 
   # ---- Spring Boot services: Actuator's Prometheus endpoint ----
   # The actuator base path is "/" in application.yml, so it's /prometheus

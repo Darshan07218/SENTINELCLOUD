@@ -52,37 +52,48 @@ export async function seedDefaultAdmin(pool) {
 }
 
 export const SIMULATOR_FULL_NAME = "Scenario Simulator";
+export const INTAKE_FULL_NAME = "Automatic Detection";
 
 /**
- * Phase 16 (docs/PHASE-16-SIMULATOR.md §1): the service account
- * simulator-service logs in with, so everything it does goes through the
- * gateway like a person's clicks and the audit log shows "Scenario
- * Simulator", never a human. It is a SERVICE account owned by configuration:
- * created if missing, and on every start its password, role and active flag
- * are reset to what SIMULATOR_EMAIL / SIMULATOR_PASSWORD say. Skipped when
- * those aren't set (the simulator then can't log in, nothing else changes).
+ * Phase 16 (docs/PHASE-16-SIMULATOR.md §1) and Phase 19: the SERVICE
+ * accounts simulator-service and intake-service log in with, so everything
+ * they do goes through the gateway like a person's clicks and the audit log
+ * names the service, never a human. Owned by configuration: created if
+ * missing, and on every start the password, role and active flag are reset
+ * to what the environment says. Skipped when the variables aren't set (that
+ * service then can't log in, nothing else changes).
  */
-export async function seedSimulatorAccount(pool) {
-  const email = process.env.SIMULATOR_EMAIL;
-  const password = process.env.SIMULATOR_PASSWORD;
+async function seedServiceAccount(pool, { emailVar, passwordVar, fullName, role, label }) {
+  const email = process.env[emailVar];
+  const password = process.env[passwordVar];
   if (!email || !password) {
-    console.log("[auth-service] SIMULATOR_EMAIL/SIMULATOR_PASSWORD not set — no simulator account");
+    console.log(`[auth-service] ${emailVar}/${passwordVar} not set — no ${label} account`);
     return;
   }
   if (isPlaceholder(password) || !passwordSchema.safeParse(password).success) {
-    throw new Error("SIMULATOR_PASSWORD is an example value or too weak (min 10 chars, upper, lower, digit). Generate one with scripts/generate-secrets.sh.");
+    throw new Error(`${passwordVar} is an example value or too weak (min 10 chars, upper, lower, digit). Generate one with scripts/generate-secrets.sh.`);
   }
   const passwordHash = await hashPassword(password);
   await pool.query(
     `INSERT INTO users (email, password_hash, full_name, role_id)
-     SELECT $1, $2, $3, id FROM roles WHERE name = 'SYSTEM_ADMIN'
+     SELECT $1, $2, $3, id FROM roles WHERE name = $4
      ON CONFLICT (email) DO UPDATE
        SET password_hash = EXCLUDED.password_hash,
            full_name = EXCLUDED.full_name,
            role_id = EXCLUDED.role_id,
            is_active = TRUE`,
-    [email.trim().toLowerCase(), passwordHash, SIMULATOR_FULL_NAME]
+    [email.trim().toLowerCase(), passwordHash, fullName, role]
   );
   const masked = email.replace(/^(.).*(@.*)$/, "$1***$2");
-  console.log(`[auth-service] simulator service account ready (${masked})`);
+  console.log(`[auth-service] ${label} service account ready (${masked})`);
+}
+
+/** Phase 16: the simulator drives the whole platform, so SYSTEM_ADMIN. */
+export function seedSimulatorAccount(pool) {
+  return seedServiceAccount(pool, { emailVar: "SIMULATOR_EMAIL", passwordVar: "SIMULATOR_PASSWORD", fullName: SIMULATOR_FULL_NAME, role: "SYSTEM_ADMIN", label: "simulator" });
+}
+
+/** Phase 19: intake-service only ever creates disasters, so the least role that may: EMERGENCY_OPERATOR. */
+export function seedIntakeAccount(pool) {
+  return seedServiceAccount(pool, { emailVar: "INTAKE_EMAIL", passwordVar: "INTAKE_PASSWORD", fullName: INTAKE_FULL_NAME, role: "EMERGENCY_OPERATOR", label: "intake" });
 }

@@ -64,15 +64,15 @@ min_length() {
   case "$1" in
     JWT_ACCESS_SECRET | JWT_REFRESH_SECRET | RESILIENCE_CHAOS_TOKEN) echo 32 ;;
     POSTGRES_PASSWORD | *_DB_PASSWORD | REDIS_PASSWORD | RABBITMQ_PASSWORD | RABBITMQ_DEFAULT_PASS | GRAFANA_ADMIN_PASSWORD) echo 16 ;;
-    DEFAULT_ADMIN_PASSWORD | SIMULATOR_PASSWORD) echo 10 ;;
+    DEFAULT_ADMIN_PASSWORD | SIMULATOR_PASSWORD | INTAKE_PASSWORD) echo 10 ;;
     *) echo 0 ;;
   esac
 }
 
 new_value() {
   case "$1" in
-    # Phase 16: the simulator's service account follows the same password policy.
-    DEFAULT_ADMIN_PASSWORD | SIMULATOR_PASSWORD) admin_password ;;
+    # Phase 16/19: the simulator and intake service accounts follow the same password policy.
+    DEFAULT_ADMIN_PASSWORD | SIMULATOR_PASSWORD | INTAKE_PASSWORD) admin_password ;;
     JWT_ACCESS_SECRET | JWT_REFRESH_SECRET | RESILIENCE_CHAOS_TOKEN) rand_hex 32 ;;
     *) rand_hex 16 ;;
   esac
@@ -84,7 +84,7 @@ needs_new() { # $1 key, $2 current value
   [ "$min" -eq 0 ] && return 1
   is_placeholder "$2" && return 0
   [ "${#2}" -lt "$min" ] && return 0
-  if [ "$1" = "DEFAULT_ADMIN_PASSWORD" ] || [ "$1" = "SIMULATOR_PASSWORD" ]; then
+  if [ "$1" = "DEFAULT_ADMIN_PASSWORD" ] || [ "$1" = "SIMULATOR_PASSWORD" ] || [ "$1" = "INTAKE_PASSWORD" ]; then
     shopt -u nocasematch
     local weak=1
     [[ "$2" =~ [a-z] && "$2" =~ [A-Z] && "$2" =~ [0-9] ]] && weak=0

@@ -1,0 +1,188 @@
+# =========================================================================
+# intake-service (Phase 19) — automatic disaster detection: polls USGS
+# earthquakes and Open-Meteo rain/wind for the watched city, auto-confirms
+# severe events, keeps the rest for an operator, and creates disasters
+# through the gateway (docs/PHASE-19-AUTO-DETECTION.md).
+#
+# Objects: ConfigMap → Deployment (1 replica, no HPA: one poller is enough,
+# and a second would only find the same events, which the unique
+# (source, external_id) key ignores) → ClusterIP Service.
+# Needs outbound internet for the feeds; the NetworkPolicies are
+# ingress-only, so egress is not restricted.
+# =========================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: intake-service-config
+  labels:
+    app.kubernetes.io/name: intake-service
+data:
+  PORT: "8091"
+  DB_NAME: "intake_db"
+  DB_POOL_MAX: "3"
+  GATEWAY_URL: "http://gateway:8080/api/v1"
+  # Watched area (Pune, like the seed data) and what counts as an event.
+  WATCH_NAME: "Pune"
+  WATCH_LATITUDE: "18.5204"
+  WATCH_LONGITUDE: "73.8567"
+  WATCH_RADIUS_KM: "500"
+  WATCH_MIN_MAGNITUDE: "3.0"
+  # Detections at or above this severity become disasters without a person
+  # (LOW | MEDIUM | HIGH | CRITICAL | NONE).
+  AUTO_CONFIRM_MIN_SEVERITY: "CRITICAL"
+  INTAKE_SOURCES: "usgs,open-meteo"
+  USGS_POLL_SECONDS: "120"
+  OPEN_METEO_POLL_SECONDS: "1800"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: intake-service
+  labels:
+    app.kubernetes.io/name: intake-service
+    app.kubernetes.io/component: backend
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: intake-service
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8091"
+        prometheus.io/path: "/metrics"
+      labels:
+        app.kubernetes.io/name: intake-service
+        app.kubernetes.io/component: backend
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: wait-for-postgres
+          image: sentinelcloud/intake-service:1.0.0
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "until nc -z -w 2 \"$DB_HOST\" \"$DB_PORT\"; do echo \"waiting for $DB_HOST:$DB_PORT\"; sleep 2; done"]
+          envFrom:
+            - configMapRef:
+                name: sentinelcloud-common
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 32Mi
+      containers:
+        - name: intake-service
+          image: sentinelcloud/intake-service:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8091
+          envFrom:
+            - configMapRef:
+                name: sentinelcloud-common
+            - configMapRef:
+                name: intake-service-config
+          env:
+            - name: DB_USER
+              value: intake_svc
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelcloud-secrets
+                  key: INTAKE_DB_PASSWORD
+            - name: JWT_ACCESS_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelcloud-secrets
+                  key: JWT_ACCESS_SECRET
+            # Its service account (EMERGENCY_OPERATOR), seeded by auth-service.
+            - name: INTAKE_EMAIL
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelcloud-secrets
+                  key: INTAKE_EMAIL
+            - name: INTAKE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelcloud-secrets
+                  key: INTAKE_PASSWORD
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # Ready = Postgres reachable. The external feeds are not required:
+          # a feed outage shows on the page; it is no reason to stop serving.
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "5"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 96Mi
+            limits:
+              cpu: 300m
+              memory: 192Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 32Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: intake-service
+  labels:
+    app.kubernetes.io/name: intake-service
+    app.kubernetes.io/component: backend
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: intake-service
+  ports:
+    - name: http
+      port: 8091
+      targetPort: http

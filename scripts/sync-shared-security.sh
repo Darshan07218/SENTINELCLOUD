@@ -12,7 +12,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 FILES=(secrets.js audit.js jwt.js)
-SERVICES=(gateway auth-service hospital-service ambulance-service disaster-service notification-service resilience-service response-service simulator-service)
+SERVICES=(gateway auth-service hospital-service ambulance-service disaster-service notification-service resilience-service response-service simulator-service intake-service)
 
 for svc in "${SERVICES[@]}"; do
   mkdir -p "services/${svc}/src/security"

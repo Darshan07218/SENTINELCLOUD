@@ -107,7 +107,7 @@ spec:
             # Engineering review: set here, not in the shared ConfigMap that
             # every pod loads with envFrom — only Postgres needs the map.
             - name: POSTGRES_SERVICE_DATABASES
-              value: "auth_db:auth_svc:AUTH_DB_PASSWORD,hospital_db:hospital_svc:HOSPITAL_DB_PASSWORD,ambulance_db:ambulance_svc:AMBULANCE_DB_PASSWORD,blood_db:blood_bank_svc:BLOOD_BANK_DB_PASSWORD,power_db:power_svc:POWER_DB_PASSWORD,disaster_db:disaster_svc:DISASTER_DB_PASSWORD,response_db:response_svc:RESPONSE_DB_PASSWORD"
+              value: "auth_db:auth_svc:AUTH_DB_PASSWORD,hospital_db:hospital_svc:HOSPITAL_DB_PASSWORD,ambulance_db:ambulance_svc:AMBULANCE_DB_PASSWORD,blood_db:blood_bank_svc:BLOOD_BANK_DB_PASSWORD,power_db:power_svc:POWER_DB_PASSWORD,disaster_db:disaster_svc:DISASTER_DB_PASSWORD,response_db:response_svc:RESPONSE_DB_PASSWORD,intake_db:intake_svc:INTAKE_DB_PASSWORD"
             - name: AUTH_DB_PASSWORD
               valueFrom:
                 secretKeyRef:
@@ -144,6 +144,12 @@ spec:
                 secretKeyRef:
                   name: sentinelcloud-secrets
                   key: RESPONSE_DB_PASSWORD
+            # Phase 19: intake-service's database.
+            - name: INTAKE_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelcloud-secrets
+                  key: INTAKE_DB_PASSWORD
             # A subdirectory of the mount, because some volume provisioners
             # put a lost+found directory at the volume root and initdb
             # refuses to initialise a non-empty directory.

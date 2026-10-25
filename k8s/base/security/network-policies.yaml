@@ -14,7 +14,7 @@
 #
 #   browser ─▶ frontend ─▶ gateway ─▶ auth / hospital / ambulance / blood-bank /
 #                                      power / disaster / notification / resilience / response / simulator
-#   simulator-service ─▶ gateway (it drives the platform only through the API)
+#   simulator-service, intake-service ─▶ gateway (they act only through the API)
 #        services ─▶ postgres (DB services only), redis (notification only),
 #                    rabbitmq (event producers/consumers only)
 #   resilience-service ─▶ drill targets (fault injection), rabbitmq management
@@ -67,7 +67,8 @@ spec:
                 operator: In
                 # resilience-service: broker-drill connectivity check (/health/ready)
                 # simulator-service (Phase 16): drives scenarios through the API, like a user
-                values: [frontend, traffic-generator, prometheus, resilience-service, simulator-service]
+                # intake-service (Phase 19): creates detected disasters through the API
+                values: [frontend, traffic-generator, prometheus, resilience-service, simulator-service, intake-service]
       ports:
         - port: 8080
 ---
@@ -83,7 +84,7 @@ spec:
     matchExpressions:
       - key: app.kubernetes.io/name
         operator: In
-        values: [auth-service, hospital-service, ambulance-service, blood-bank-service, power-service, disaster-service, notification-service, resilience-service, response-service, simulator-service]
+        values: [auth-service, hospital-service, ambulance-service, blood-bank-service, power-service, disaster-service, notification-service, resilience-service, response-service, simulator-service, intake-service]
   policyTypes: [Ingress]
   ingress:
     - from:
@@ -103,6 +104,7 @@ spec:
         - port: 8088
         - port: 8089 # response-service (Phase 15)
         - port: 8090 # simulator-service (Phase 16)
+        - port: 8091 # intake-service (Phase 19)
 ---
 # Phase 11 Resilience Demo: resilience-service injects faults into (and
 # measures) the four drill targets, and checks the event services'
@@ -146,7 +148,7 @@ spec:
             matchExpressions:
               - key: app.kubernetes.io/name
                 operator: In
-                values: [auth-service, hospital-service, ambulance-service, blood-bank-service, power-service, disaster-service, response-service]
+                values: [auth-service, hospital-service, ambulance-service, blood-bank-service, power-service, disaster-service, response-service, intake-service]
       ports:
         - port: 5432
 ---
