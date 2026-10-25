@@ -113,3 +113,10 @@ regression test covers it.
 | CRITICAL demo | AUTO_CONFIRMED, disaster created |
 | LOW demo → dismiss | DISMISSED, nothing created |
 | Gateway audit log | both creations by the intake account (EMERGENCY_OPERATOR), not the admin who clicked |
+| GitHub CI run #14 (push, `25b7c75`) | 18 / 18 push jobs green, incl. the intake-service image |
+| GitHub CI run #16 (nightly, `25b7c75`) | **19 / 19 green**, incl. the end-to-end system check (250 s) with the new check 14 on a fresh Compose stack |
+
+Run #15 (started by hand) was cancelled by the nightly run #16, which began a
+minute later: both were in the same concurrency group. The workflow's group
+now includes the event, so a manual, nightly and push run never cancel one
+another.

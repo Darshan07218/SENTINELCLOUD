@@ -18,9 +18,11 @@ on:
 permissions:
   contents: read
 
-# A newer push to the same branch cancels the run it replaces.
+# A newer push to the same branch cancels the run it replaces. The event is
+# part of the group, so the nightly run and a manual "Run workflow" never
+# cancel each other or a push run (run #15 was cancelled that way).
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
