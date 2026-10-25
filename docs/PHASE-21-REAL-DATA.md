@@ -93,5 +93,7 @@ the corporation's boundary.
 | Population build | 241 × 241 cells, 38.7 M people |
 | Node tests, real-PostgreSQL suite | pass (57 / 57 DB) |
 | Java tests | blood-bank and power green |
+| GitHub CI run #23 (push, `3975606`) | 18 / 18 push jobs green, incl. the new data and validation tests |
+| GitHub CI run #24 (on demand, `3975606`) | **19 / 19 green**: the end-to-end system check (246 s) seeded the real data into a fresh Compose stack and passed all 15 checks against it |
 
 Data © OpenStreetMap contributors (ODbL 1.0); population © WorldPop (CC BY 4.0).
