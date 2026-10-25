@@ -1,394 +1,302 @@
+<div align="center">
+
 # SentinelCloud
 
-**Cloud-Native Critical Infrastructure Intelligence & Emergency Response Platform**
-*Individual Third-Year Cloud Computing Project*
+**A cloud-native emergency-response platform for a city's critical infrastructure.**
 
-> **Build status: Phase 13 — Engineering review complete.**
-> All 12 build phases are in place (auth, hospitals, ambulances, blood
-> banks, power, disasters + event bus, live feed, Command Center,
-> Kubernetes, monitoring, Resilience Demo, security hardening). Phase 13
-> audited the whole system, fixed the defects it found (dispatch races,
-> failure-event bookkeeping, double-crediting blood releases, broker
-> crash paths, responsive UI…) and added a real-PostgreSQL integration
-> suite and a one-command verifier. Start with
-> [`docs/SYSTEM-REFERENCE.md`](docs/SYSTEM-REFERENCE.md) (architecture,
-> APIs, schemas, setup, demo) and
-> [`docs/ENGINEERING-REVIEW.md`](docs/ENGINEERING-REVIEW.md) (what was
-> found, fixed and verified). Security: [`SECURITY.md`](SECURITY.md).
+Hospitals, ambulances, blood banks and the power grid, coordinated in real time
+when a disaster strikes: from automatic detection to a costed, approved and
+reversible response plan.
+
+[![CI](https://github.com/Darshan07218/SENTINELCLOUD/actions/workflows/ci.yml/badge.svg)](https://github.com/Darshan07218/SENTINELCLOUD/actions/workflows/ci.yml)
+![Node.js](https://img.shields.io/badge/Node.js-22-339933?logo=node.js&logoColor=white)
+![Java](https://img.shields.io/badge/Java-21%20%C2%B7%20Spring%20Boot%203-6DB33F?logo=springboot&logoColor=white)
+![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black)
+![Kubernetes](https://img.shields.io/badge/Kubernetes-KEDA%20%C2%B7%20HPA-326CE5?logo=kubernetes&logoColor=white)
+![RabbitMQ](https://img.shields.io/badge/RabbitMQ-event%20bus-FF6600?logo=rabbitmq&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)
+
+</div>
 
 ---
 
-## What this repository is
+## Overview
 
-SentinelCloud simulates how hospitals, ambulance services, blood banks,
-and power infrastructure coordinate during a disaster, via an
-event-driven microservices architecture. Full system design lives in
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). This README covers only
-what's needed to run and verify what exists today.
+When a flood or an earthquake hits a city, the organisations that respond
+(hospitals, ambulance services, blood banks, the power utility) each hold part
+of the picture. SentinelCloud connects them through an event-driven
+microservice architecture:
 
-## Repository layout
+1. **Detect.** Public earthquake and weather feeds are watched continuously;
+   a serious event becomes a disaster automatically, a lesser one waits for an
+   operator to confirm.
+2. **React.** Every service checks its own resources inside the affected area
+   (free beds and ICU, available ambulances, blood stock, transformers at
+   risk) and reports back within seconds.
+3. **Plan.** A response engine estimates the people affected and the
+   casualties, then proposes a plan: ambulances to dispatch, hospital beds to
+   hold, blood to reserve, and what only a person can do.
+4. **Act and undo.** On approval each action is executed exactly once by the
+   service that owns the resource; the whole plan can be reversed.
 
+Everything is visible live on a command-center dashboard with real maps,
+forecasts and an event timeline, and the platform runs on Kubernetes with
+autoscaling, monitoring, self-healing drills and a CI pipeline that verifies
+the full system end to end.
+
+> Academic project for a third-year Cloud Computing module. All data is
+> synthetic or public; no real emergency service is connected. See
+> [Limitations](#limitations).
+
+## Highlights
+
+| Area | What it does |
+|---|---|
+| **Automatic detection** | Polls USGS earthquakes and Open-Meteo rain and wind for the city; CRITICAL events auto-confirm, others go to an approval queue. Each source event is stored once. |
+| **Impact-based planning** | A population-density model (approximate Census 2011 densities for Pune) and per-type casualty rates size the response: beds, ICU, ambulances, blood. |
+| **Resource reservation** | Approving a plan holds hospital beds and blood and dispatches ambulances; undo releases everything. Commands are idempotent and executed exactly once. |
+| **Forecasting** | 24-hour bed-occupancy forecast per hospital (damped Holt smoothing over a trigger-recorded history) and a 0–100 transformer-risk score; both feed the planner. |
+| **Reliable messaging** | Transactional outbox, publisher confirms, retries and dead-letter queues: no event is lost when the broker or a handler fails. |
+| **Cloud-native operations** | Kubernetes manifests (Kustomize), HPA on CPU and KEDA on queue length, health probes, NetworkPolicies, graceful shutdown. |
+| **Observability** | Prometheus metrics in every service, recording and alert rules with unit tests, Alertmanager, four Grafana dashboards. |
+| **Resilience** | Six controlled failure drills (pod hang, crash, liveness failure, pod loss, traffic surge, broker outage) that advance only on observed cluster state. |
+| **Security** | JWT with refresh-token rotation and reuse detection, role-based access at the gateway and in each service, least-privilege database roles, rate limits, strict CSP, audit log. |
+| **Simulation** | Scripted disaster scenarios and background city activity for hands-free demos, driven through the public API like a real user. |
+
+## Architecture
+
+```mermaid
+flowchart LR
+    UI["React dashboard<br/>(nginx)"] --> GW["API Gateway<br/>JWT · RBAC · rate limits"]
+    GW --> domain
+    GW --> automation
+    GW --> NOTI["notification-service<br/>WebSocket live feed"]
+
+    subgraph domain["Domain services"]
+        AUTH["auth"]
+        HOS["hospital"]
+        AMB["ambulance"]
+        BLD["blood-bank · Spring Boot"]
+        PWR["power · Spring Boot"]
+        DIS["disaster"]
+    end
+
+    subgraph automation["Automation"]
+        RSP["response · planner"]
+        INT["intake · detection"]
+        SIM["simulator"]
+        RES["resilience · drills"]
+    end
+
+    EXT[("USGS · Open-Meteo")] -. polls .-> INT
+    domain <== "events & commands" ==> MQ{{"RabbitMQ<br/>topic exchange + DLX"}}
+    RSP <== "plans & commands" ==> MQ
+    MQ --> NOTI
+    NOTI --> RD[("Redis")]
+    domain --- PG[("PostgreSQL<br/>database per service")]
+    automation --- PG
 ```
-sentinelcloud/
-├── SECURITY.md                  # security architecture (Phase 12)
-├── docker-compose.yml          # orchestrates the entire local stack
-├── .env.example                 # template; ./scripts/generate-secrets.sh creates .env
-├── k8s/                         # Kubernetes (Phase 9): base/ + overlays/local/ — kubectl apply -k k8s/overlays/local
-├── scripts/k8s-build-images.sh  # builds all images for Kind/Minikube
-├── scripts/generate-secrets.sh  # random secrets for .env and k8s secrets.env (Phase 12)
-├── scripts/verify-system.sh     # the 13 end-to-end checks against Compose and/or Kind
-├── scripts/run-node-tests.sh    # every Node test file, pass/fail per file
-├── tests/db/                    # real-PostgreSQL integration suite (all services' migrations + data logic)
-├── shared/node-security/        # canonical security modules copied into each Node service
-├── frontend/                    # React + Vite dashboard (Dockerfile = nginx prod, Dockerfile.dev = Compose)
-├── services/
-│   ├── gateway/                 # API Gateway (Node/Express) — single ingress
-│   ├── auth-service/            # Node/Express — users/JWT (Phase 2)
-│   ├── hospital-service/        # Node/Express
-│   ├── ambulance-service/       # Node/Express
-│   ├── disaster-service/        # Node/Express — event orchestrator
-│   ├── notification-service/    # Node/Express + WebSocket + Redis
-│   ├── resilience-service/      # Node (no deps) — failure drills for the Resilience Demo (Phase 11)
-│   ├── blood-bank-service/      # Spring Boot (Java 21)
-│   └── power-service/           # Spring Boot (Java 21)
-├── infrastructure/
-│   ├── postgres-init/           # multi-database bootstrap script
-│   └── prometheus/              # Compose scrape config (rules/dashboards: k8s/base/monitoring/config/)
-└── docs/
-    ├── SYSTEM-REFERENCE.md      # architecture, tree, stack, APIs, schemas, setup, demo, limits
-    ├── ENGINEERING-REVIEW.md    # Phase 13 audit: findings, fixes, verification evidence
-    ├── EVENT-SCHEMA.md          # every routing key and payload on the event bus
-    ├── ARCHITECTURE.md          # design rationale (historical; current facts in SYSTEM-REFERENCE)
-    ├── ROADMAP.md
-    ├── PHASE-1-FOUNDATION.md    # what was built, how to verify it
-    ├── …                        # one doc per phase
-    ├── PHASE-9-KUBERNETES.md    # cluster setup, scaling demo, probes, limits
-    ├── PHASE-10-MONITORING.md   # metrics, dashboards, alerts, presentation demo
-    └── PHASE-11-RESILIENCE.md   # failure drills, self-healing demo, presentation script
+
+Every service owns its data (database per service, its own login role) and
+talks to the others only through events or through the gateway. The full
+design is in [`docs/SYSTEM-REFERENCE.md`](docs/SYSTEM-REFERENCE.md); the event
+contract is in [`docs/EVENT-SCHEMA.md`](docs/EVENT-SCHEMA.md).
+
+### A disaster, end to end
+
+```mermaid
+sequenceDiagram
+    participant Feed as USGS / Open-Meteo
+    participant INT as intake-service
+    participant DIS as disaster-service
+    participant SVC as hospital · ambulance · blood · power
+    participant RSP as response-service
+    actor Op as Emergency operator
+
+    Feed->>INT: earthquake / heavy-rain forecast
+    INT->>INT: classify, deduplicate, auto-confirm if CRITICAL
+    INT->>DIS: POST /disasters (through the gateway)
+    DIS-->>SVC: disaster.detected
+    SVC-->>DIS: capacity, fleet, stock, grid risk (reactions)
+    SVC-->>RSP: the same reactions
+    RSP->>RSP: impact estimate → plan (beds, ambulances, blood)
+    RSP-->>Op: plan proposed
+    Op->>RSP: approve
+    RSP-->>SVC: commands (dispatch, hold beds, reserve blood)
+    SVC-->>RSP: command.succeeded / failed
+    Op->>RSP: undo (optional) → everything released
 ```
 
-## Prerequisites
+### Services
 
-- Docker Desktop (or Docker Engine + Compose plugin) — v24+
-- ~4 GB free RAM for the stack (single shared Postgres instance is used
-  locally specifically to keep this light — see `docs/ARCHITECTURE.md`)
-- No cloud account of any kind is required. Everything above runs
-  entirely on your machine, for free.
+| Service | Stack | Responsibility | Port |
+|---|---|---|---|
+| `gateway` | Node / Express | Single entry point: JWT verification, role checks, rate limits, CORS, audit log, health aggregation | 8080 |
+| `auth-service` | Node / Express | Users, roles, access and refresh tokens, service accounts | 8081 |
+| `hospital-service` | Node / Express | Hospitals, bed/ICU/ventilator capacity, capacity history and forecast, bed reservations | 8082 |
+| `ambulance-service` | Node / Express | Fleet, emergencies, transactional nearest-unit dispatch | 8083 |
+| `blood-bank-service` | Java 21 / Spring Boot | Batch-level inventory, FEFO reservations, transfers, shortage and demand forecast | 8084 |
+| `power-service` | Java 21 / Spring Boot | Substations, transformer telemetry, anomaly detection, risk forecast | 8085 |
+| `disaster-service` | Node / Express | Disaster lifecycle, fan-out of `disaster.*` events, situation reports | 8086 |
+| `notification-service` | Node / Express + WebSocket | Live event feed, event history (Redis), dead-letter inspection and replay | 8087 |
+| `resilience-service` | Node (no dependencies) | Controlled failure drills against the Kubernetes API | 8088 |
+| `response-service` | Node / Express | Impact estimate, response plans, approval, commands, undo | 8089 |
+| `simulator-service` | Node (no dependencies) | Scripted scenarios and background activity through the API | 8090 |
+| `intake-service` | Node / Express | Automatic disaster detection from public feeds | 8091 |
+| `frontend` | React 18 + Vite, nginx | Command Center and domain dashboards, Leaflet maps | 8080 (nginx) · 5173 (Vite, Compose) |
 
-## Quick start
+**Infrastructure:** PostgreSQL 16, RabbitMQ 3.13, Redis 7, Prometheus, Alertmanager, Grafana, kube-state-metrics, KEDA.
+
+## Getting started
+
+### Prerequisites
+
+- Docker Desktop (or Docker Engine with the Compose plugin), v24 or newer
+- About 4 GB of free RAM for Docker Compose; 6 GB and 4 CPUs for Kubernetes
+- Bash for the helper scripts (Git Bash or WSL on Windows)
+- No cloud account: everything runs locally
+
+### Run with Docker Compose
 
 ```bash
-# 1. Clone/enter the repo, then generate .env with random secrets
-#    (Phase 12; Windows: run it in Git Bash or WSL)
-./scripts/generate-secrets.sh compose
+git clone https://github.com/Darshan07218/SENTINELCLOUD.git
+cd SENTINELCLOUD
 
-# 2. Build and start every container
-docker compose up --build
-
-# First run: Postgres/RabbitMQ images download, Maven compiles the two
-# Spring Boot services from scratch, and npm installs each Node
-# service's dependencies inside its build stage. Expect this to take
-# several minutes the first time; subsequent runs are much faster due
-# to Docker layer caching.
+./scripts/generate-secrets.sh compose   # creates .env with random secrets
+docker compose up --build               # first build takes several minutes
 ```
 
-When it's ready, open:
+| What | URL |
+|---|---|
+| Dashboard | http://localhost:5173 (port set by `FRONTEND_PORT` in `.env`) |
+| API gateway | http://localhost:8080/health |
+| Grafana | http://localhost:3000 |
+| Prometheus | http://localhost:9090 |
+| RabbitMQ management | http://localhost:15672 |
 
-- **Frontend (Command Center and dashboards):** http://localhost:5173
-- **API Gateway:** http://localhost:8080/health
-- **RabbitMQ management UI:** http://localhost:15672 (user/pass from `.env`)
-- **Prometheus:** http://localhost:9090
-- **Grafana:** http://localhost:3000 (`GRAFANA_ADMIN_USER` / `GRAFANA_ADMIN_PASSWORD` from `.env`)
+Sign in with the administrator account the generator wrote to `.env`
+(`DEFAULT_ADMIN_EMAIL` / `DEFAULT_ADMIN_PASSWORD`). Every port is bound to
+`127.0.0.1`, and the application services are reachable only through the gateway.
 
-Every port is bound to 127.0.0.1 (this computer only), and the application
-services aren't published at all: the gateway is the single way in. See
-[`SECURITY.md`](SECURITY.md).
+Stop with `docker compose down` (add `-v` to delete the data volumes too).
 
-To check the whole system end to end (13 checks, pass/fail each):
+### Run on Kubernetes
+
+**Docker Desktop (Windows):** enable Kubernetes in Docker Desktop, then
 
 ```bash
-./scripts/verify-system.sh compose --yes   # starts from clean volumes
+./scripts/generate-secrets.sh k8s        # Git Bash: creates k8s/overlays/local/secrets.env
 ```
 
-## Authentication
-
-Register and log in via the frontend at http://localhost:5173, or directly:
-
-```bash
-curl -X POST http://localhost:8080/api/v1/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"email":"you@example.com","password":"SomeStrongPass1","fullName":"Your Name"}'
-
-curl -X POST http://localhost:8080/api/v1/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"you@example.com","password":"SomeStrongPass1"}'
+```powershell
+.\scripts\k8s-desktop.ps1 deploy         # builds and loads every image, installs KEDA, deploys
+.\scripts\k8s-desktop.ps1 forward        # http://localhost:30080 (Grafana 30030, Prometheus 30090)
 ```
 
-Sign-up always creates a read-only `CITIZEN` account (Phase 12). A
-`SYSTEM_ADMIN` grants other roles on the **Users** page (or
-`PATCH /api/v1/auth/users/{id}`). The first `SYSTEM_ADMIN` is seeded on
-first startup from `DEFAULT_ADMIN_EMAIL` / `DEFAULT_ADMIN_PASSWORD` in
-`.env` — the generator creates a random password; read it from that file.
-Interactive API docs: http://localhost:8080/api/v1/auth/docs (the only
-public docs page). The other services' Swagger pages sit behind the gateway's
-authentication, so a browser gets 401 there; use the API list in
-[`docs/SYSTEM-REFERENCE.md`](docs/SYSTEM-REFERENCE.md#4-api-list) or call them
-with a token. Older walkthrough in [`docs/PHASE-2-AUTH.md`](docs/PHASE-2-AUTH.md).
-
-## Hospitals
-
-8 realistic sample hospitals are seeded automatically on first
-startup. Log in and click **Hospitals** in the nav for a live
-dashboard (total hospitals, bed/ICU availability, overloaded count,
-capacity %, and an alerts feed). Full API — register a hospital,
-update bed/ICU/ventilator availability, search near a location, mark a
-hospital overloaded — in [`docs/PHASE-3-HOSPITAL.md`](docs/PHASE-3-HOSPITAL.md)
-(Swagger at `/api/v1/hospitals/docs` needs a Bearer token).
-
-## Ambulances & Dispatch
-
-10 sample ambulances and 1 demo emergency are seeded automatically.
-Log in and click **Ambulances** for a live fleet map (color-coded by
-status) and active-emergency feed. Report an emergency via the API and
-watch the full dispatch workflow run in one call — find available
-ambulances, rank by realistic road distance, assign the best one, and
-publish an event. Dispatch is transactional: two operators can never send
-the same ambulance to two calls, and cancelling a call frees its
-ambulance. Documented in [`docs/PHASE-4-AMBULANCE.md`](docs/PHASE-4-AMBULANCE.md).
-
-## Blood Banks
-
-3 sample blood banks with a deliberately uneven inventory spread (some
-healthy, some low, some expiring soon) are seeded automatically, along
-with synthetic historical demand data. Log in and click **Blood
-Banks** for inventory/low-stock/expiry charts, a demand trend chart
-with a prototype forecast, and a shortage-alert feed. **The demand
-forecast is a simple statistical prototype over synthetic demo data —
-it is not medically validated and should never be used for real
-clinical or procurement decisions** (the API repeats this disclaimer
-on every response). Full API — add inventory, reserve/release blood,
-transfer between banks — documented in
-[`docs/PHASE-5-BLOOD-BANK.md`](docs/PHASE-5-BLOOD-BANK.md).
-
-## Power Grid
-
-Substations and transformers with live telemetry: each reading is checked
-against the transformer's rated values and its own statistical baseline;
-CRITICAL/FAILED transitions open a failure episode that recovery closes.
-Click **Power Grid** for the map, overloaded/high-temperature lists and
-telemetry trends. Details: [`docs/PHASE-6-POWER.md`](docs/PHASE-6-POWER.md).
-
-## Disasters and the event bus
-
-An `EMERGENCY_OPERATOR` reports a disaster on the **Emergency** page; it is
-published as `disaster.detected` on RabbitMQ, the hospital, ambulance,
-blood-bank and power services each answer with a reaction event, and the
-disaster service assembles them into a live situation report. Status moves
-ACTIVE ⇄ CONTAINED → RESOLVED (RESOLVED is final). Event contract:
-[`docs/EVENT-SCHEMA.md`](docs/EVENT-SCHEMA.md); walkthrough:
-[`docs/PHASE-7-DISASTER.md`](docs/PHASE-7-DISASTER.md).
-
-## Command Center
-
-The home page after login: one view of every domain (map, alerts, KPIs,
-event timeline) that refreshes itself when events arrive. Details:
-[`docs/PHASE-8-COMMAND-CENTER.md`](docs/PHASE-8-COMMAND-CENTER.md).
-
-## Reliable events (Phase 14)
-
-No event is lost any more, even when RabbitMQ is down or a handler fails.
-A change and its event are saved in one database transaction (the
-**outbox**) and delivered once RabbitMQ confirms it; a failing handler is
-retried, then its message is parked in a **dead-letter queue** instead of
-dropped. SYSTEM_ADMINs list and replay dead letters at
-`GET`/`POST /api/v1/notifications/dead-letters[/replay]`; Grafana's System
-Health has an "Event reliability" row, with two new alerts. Details, runbooks
-and the outage demo: [`docs/PHASE-14-RELIABLE-EVENTS.md`](docs/PHASE-14-RELIABLE-EVENTS.md).
-
-## Automated response engine (Phase 15)
-
-A ninth microservice, **response-service**, turns each disaster's
-situation report into a **response plan**: dispatch the right number of
-ambulances, reserve O− and O+ blood at the nearest bank for the nearest
-hospital with free beds, widen the search when too few ambulances are in
-range, and flag what only a person can do (ICU shortages, transformers at
-risk). The plan appears on the **Emergency** page under the situation
-report; an EMERGENCY_OPERATOR approves or rejects it, and can **undo** it
-afterwards (calls cancelled, ambulances freed, blood released). Plans are
-carried out through command events, each executed exactly once by the
-service that owns the resource. Set `RESPONSE_AUTO_APPROVE=true` to execute
-plans without waiting. Details: [`docs/PHASE-15-RESPONSE-ENGINE.md`](docs/PHASE-15-RESPONSE-ENGINE.md).
-The playbook is a demo policy, not emergency-management guidance.
-
-## Scenario simulator (Phase 16)
-
-For a hands-free demo, a SYSTEM_ADMIN opens **Simulator** and starts a
-scripted disaster (monsoon flood, earthquake with escalation, industrial
-fire). It plays out over 2–4 minutes on its own: the disaster is reported,
-hospitals fill up, a transformer overheats, the response plan is approved,
-ambulances drive to the scene and back on the map, and everything is restored
-and resolved at the end. The page shows each step's narration next to what
-actually happened. A **background** switch keeps the city alive between demos
-(ambulances finish their calls, transformers report readings).
-
-**simulator-service** acts only through the API gateway, with its own service
-account (`SIMULATOR_EMAIL` / `SIMULATOR_PASSWORD`), so every step passes the
-same checks and audit log as a person's click. Details:
-[`docs/PHASE-16-SIMULATOR.md`](docs/PHASE-16-SIMULATOR.md).
-
-## CI and queue-based autoscaling (Phase 17)
-
-**CI:** `.github/workflows/ci.yml` runs on every push and pull request: Node
-tests, the real-PostgreSQL suite, Java tests, alert unit tests, Compose and
-Kubernetes manifest checks, and a build of every Docker image. The full
-13-check system verification runs nightly and on demand. It starts working
-as soon as the project is pushed to GitHub.
-
-**KEDA:** on Kubernetes, notification-service also scales on its **backlog**:
-one replica per 20 events waiting in its queue (1–3 replicas), on top of
-CPU. `scripts/k8s-desktop.ps1 deploy` installs KEDA and uses
-`k8s/overlays/local-keda`; `k8s/overlays/local` still works without it.
-`.\scripts\keda-scale-demo.ps1` shows it scaling 1 → 3 replicas on a
-synthetic backlog. Details: [`docs/PHASE-17-CI-AND-KEDA.md`](docs/PHASE-17-CI-AND-KEDA.md).
-
-## Maps and forecasts (Phase 18)
-
-Every map is a real tiled map (Leaflet, OpenStreetMap data). On top of that:
-
-- **Bed-occupancy forecast** (Hospitals page): every change to a hospital's
-  beds or ICU is recorded (a database trigger), and the next 24 h of
-  occupancy is forecast from the last 7 days, with an 80% band, the hours
-  until the 90% "full" line and a risk level. A map colours each hospital by
-  that risk. API: `GET /api/v1/hospitals/forecast`, `GET /api/v1/hospitals/{id}/forecast`.
-- **Transformer-risk forecast** (Power page): each transformer's load and
-  temperature trend, projected against its critical limits, plus its recent
-  failures and anomalies, as a 0–100 score with the reasons. API:
-  `GET /api/v1/power/transformers/risk-forecast`, `…/transformers/{id}/risk-forecast`.
-
-A fresh install gets 72 h of synthetic hospital history so the forecast has
-something to show; it is marked as such in the API and on the page.
-Details: [`docs/PHASE-18-MAPS-AND-FORECASTS.md`](docs/PHASE-18-MAPS-AND-FORECASTS.md).
-
-## Automatic disaster detection (Phase 19)
-
-Disasters no longer need someone to report them. **intake-service** watches
-free public feeds for the city: **USGS** earthquakes (every 2 min) and the
-**Open-Meteo** forecast for heavy rain and storm-force wind (every 30 min, IMD
-rainfall categories). Each event is stored once. CRITICAL ones become
-disasters on their own; the rest wait on the **Auto-Detection** page for an
-operator to confirm or dismiss. A confirmed detection is created through the
-gateway with intake's own EMERGENCY_OPERATOR account, and the usual flow
-follows (services react, the response engine proposes a plan). Admins can
-inject a labelled DEMO detection to show it live. Settings:
-`AUTO_CONFIRM_MIN_SEVERITY` (default `CRITICAL`, `NONE` = always ask),
-`INTAKE_SOURCES`, `WATCH_*`. Details:
-[`docs/PHASE-19-AUTO-DETECTION.md`](docs/PHASE-19-AUTO-DETECTION.md).
-
-## Smarter response (Phase 20)
-
-Response plans are now sized from **who lives in the zone**: a population-density
-model of Pune (approximate Census 2011 figures) gives the people within the
-disaster's radius, and per-type exposure and casualty rates turn that into the
-beds, ICU beds, ambulances and blood needed (the Phase 15 severity table stays
-the minimum). Approving a plan now **holds hospital beds** (taken off the free
-count at once, so two disasters can't count on the same beds; undo gives them
-back), spread over hospitals that aren't about to fill up per the **Phase 18
-forecast**, never more than 80 % of a hospital's free beds. Transformers the
-risk forecast flags are reported even before they fail. Details:
-[`docs/PHASE-20-SMARTER-RESPONSE.md`](docs/PHASE-20-SMARTER-RESPONSE.md).
-
-## Stopping the stack
-
-```bash
-docker compose down          # stop and remove containers, keep data volumes
-docker compose down -v       # also wipe Postgres/Redis/RabbitMQ/Grafana/Prometheus data
-```
-
-## Running on Kubernetes (Phase 9)
-
-Free and fully local: Kind or Minikube, no cloud account. Short version
-with Kind (full walkthrough, Minikube commands, the scaling demo and
-troubleshooting are in [`docs/PHASE-9-KUBERNETES.md`](docs/PHASE-9-KUBERNETES.md)):
+**Kind or Minikube:** see [`docs/PHASE-9-KUBERNETES.md`](docs/PHASE-9-KUBERNETES.md); in short
 
 ```bash
 kind create cluster --config k8s/cluster/kind-cluster.yaml
-kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
-kubectl patch deployment metrics-server -n kube-system --type=json --patch-file k8s/cluster/metrics-server-kind-patch.json
-./scripts/k8s-build-images.sh kind          # builds 10 images + loads them into Kind
-./scripts/generate-secrets.sh k8s           # random secrets → k8s/overlays/local/secrets.env
-# server-side: the Grafana dashboards ConfigMap exceeds client-side apply's annotation limit
-kubectl apply --server-side -k k8s/overlays/local
-kubectl wait --for=condition=Ready pods --all -n sentinelcloud --timeout=600s
-# open http://localhost:30080
-
-kubectl scale deployment hospital-service --replicas=3 -n sentinelcloud   # scaling demo
-kubectl delete -k k8s/overlays/local                                                    # remove everything
-kind delete cluster --name sentinelcloud
+./scripts/generate-secrets.sh k8s
+./scripts/k8s-build-images.sh kind
+kubectl apply --server-side -k k8s/overlays/local   # or k8s/overlays/local-keda with KEDA installed
 ```
 
-Give Docker at least 4 CPUs and 6 GiB of RAM.
+### A five-minute demo
 
-## Monitoring (Phase 10)
+1. **Command Center**: the whole city on one map; hospitals, ambulances, blood banks, substations.
+2. **Auto-Detection**: inject a *HIGH flood* detection (admin) and **Confirm** it.
+3. **Emergency**: watch the four services react and the situation report fill in; open the
+   response plan with its casualty estimate, then **Approve** it. Ambulances move on the map,
+   beds are held, blood is reserved.
+4. **Hospitals / Power Grid**: the 24-hour forecasts and the risk map.
+5. **Undo** the plan and see every resource released. Optionally, run a failure drill on
+   **Resilience Demo** or a full scenario on **Simulator**.
 
-Deployed automatically with the rest of the stack, in both Kubernetes
-and Docker Compose. Full details, every alert's runbook, and a
-step-by-step **presentation demo script** are in
-[`docs/PHASE-10-MONITORING.md`](docs/PHASE-10-MONITORING.md).
+## Testing and quality
 
-| UI | Kubernetes (Kind) | Docker Compose | Login |
-|---|---|---|---|
-| Grafana (System Health dashboard) | http://localhost:30030 | http://localhost:3000 | admin / `GRAFANA_ADMIN_PASSWORD` |
-| Prometheus (targets, alerts) | http://localhost:30090 | http://localhost:9090 | — |
-| Alertmanager | http://localhost:30093 | http://localhost:9093 | — |
-
-```bash
-promtool test rules k8s/base/monitoring/config/prometheus/tests/alerts.test.yml   # 19 alert unit tests
-kubectl scale deployment traffic-generator -n sentinelcloud --replicas=1         # demo traffic (read-only)
-```
-
-## Resilience Demo (Phase 11)
-
-Kubernetes only (under Docker Compose the page explains why drills need an
-orchestrator). Full details, the security model and a **presentation
-script** are in [`docs/PHASE-11-RESILIENCE.md`](docs/PHASE-11-RESILIENCE.md).
-
-`./scripts/generate-secrets.sh k8s` already creates the shared
-`RESILIENCE_CHAOS_TOKEN` the drills need. Open http://localhost:30080, log in
-as a `SYSTEM_ADMIN` and choose **Resilience Demo**.
-
-| Drill | Shows |
+| Layer | What runs |
 |---|---|
-| Hospital service failure (pod hangs) | readiness probe → load balancer removes it; liveness probe → restart |
-| Ambulance service failure (process crash) | kubelet restart, failover to the other replica |
-| Blood service failure (Spring `LivenessState.BROKEN`) | actuator health groups → probes → JVM restart |
-| Power service failure (pod lost) | ReplicaSet creates a replacement pod |
-| High emergency traffic | HorizontalPodAutoscaler scale-out + load spreading |
-| Message broker failure | queue buildup, StatefulSet + PVC broker recovery, reconnects, 0 events lost |
+| Unit and integration (Node) | 560+ tests across every Node service, in-memory Postgres for route tests |
+| Unit (Java) | JUnit suites for both Spring Boot services (about 85 tests) |
+| Real PostgreSQL | Every migration as each service's restricted role, plus concurrency tests: dispatch races, exactly-once commands, outbox relays, bed reservations, plan settlement |
+| Monitoring rules | `promtool` unit tests for the alert rules |
+| End to end | `scripts/verify-system.sh`: brings the full stack up from clean and runs **15 system checks**, from authentication to automatic detection and bed reservation |
 
-## Tests
+The [CI pipeline](.github/workflows/ci.yml) runs the unit, integration,
+database, rule and manifest checks and builds every image on each push; the
+end-to-end system check runs nightly and on demand.
 
 ```bash
-./scripts/run-node-tests.sh          # every Node test file (run npm ci in each service first)
-.\scripts\run-node-tests.ps1         # the same on Windows PowerShell
-(cd services/blood-bank-service && mvn test); (cd services/power-service && mvn test)
-promtool test rules k8s/base/monitoring/config/prometheus/tests/alerts.test.yml
-# real PostgreSQL (wipes the six service databases — see the file header):
-SC_DB_TEST=1 SC_DB_TEST_ALLOW_RESET=1 PGHOST=127.0.0.1 PGPORT=5432 … node --test tests/db/realPostgres.test.js
+./scripts/run-node-tests.sh                 # all Node suites
+./scripts/run-db-tests.sh                   # real-PostgreSQL suite (throwaway container)
+./scripts/verify-system.sh compose --yes    # full system, 15 checks
 ```
 
-`./scripts/verify-system.sh` runs all of these (in containers) plus the 13
-system checks. Details: [`docs/SYSTEM-REFERENCE.md`](docs/SYSTEM-REFERENCE.md#12-testing).
+## Documentation
 
-## Development without Docker (per-service)
+| Document | Contents |
+|---|---|
+| [System reference](docs/SYSTEM-REFERENCE.md) | Architecture, APIs, schemas, configuration, operations |
+| [Event schema](docs/EVENT-SCHEMA.md) | Every routing key and payload on the event bus |
+| [Security](SECURITY.md) | Threat model and controls |
+| [Engineering review](docs/ENGINEERING-REVIEW.md) | Whole-system audit: findings, fixes, evidence |
+| [Roadmap](docs/ROADMAP.md) | The 20 delivered phases, each with its design, tests and verification record |
+| [Kubernetes](docs/PHASE-9-KUBERNETES.md) · [Monitoring](docs/PHASE-10-MONITORING.md) · [Resilience](docs/PHASE-11-RESILIENCE.md) | Running, observing and breaking the platform on purpose |
+| [Reliable events](docs/PHASE-14-RELIABLE-EVENTS.md) · [Response engine](docs/PHASE-15-RESPONSE-ENGINE.md) · [Simulator](docs/PHASE-16-SIMULATOR.md) | Messaging guarantees, planning and command execution, demos |
+| [CI and KEDA](docs/PHASE-17-CI-AND-KEDA.md) · [Maps and forecasts](docs/PHASE-18-MAPS-AND-FORECASTS.md) · [Auto-detection](docs/PHASE-19-AUTO-DETECTION.md) · [Smarter response](docs/PHASE-20-SMARTER-RESPONSE.md) | Automation and decision support |
 
-Each service also has its own `.env.example` for running it directly
-with `npm run dev` (Node services) or `mvn spring-boot:run` (Spring
-services) against infra started via `docker compose up postgres redis
-rabbitmq`. See the service's own directory for specifics — this is
-optional; Docker Compose is the primary supported workflow.
+## Repository structure
 
-## License / academic context
+```
+.
+├── services/                 # 12 backend services (one Docker build context each)
+├── frontend/                 # React dashboard (nginx image for production)
+├── k8s/
+│   ├── base/                 # Deployments, StatefulSets, Services, HPAs, NetworkPolicies, monitoring
+│   ├── components/keda/      # queue-based autoscaling (optional)
+│   └── overlays/             # local, local-keda
+├── infrastructure/           # Postgres init script, Compose Prometheus config
+├── shared/                   # canonical security and messaging modules copied into each service
+├── tests/db/                 # real-PostgreSQL integration suite
+├── scripts/                  # secrets, image builds, deploy, verification, demos
+├── docs/                     # reference, event schema, per-phase design records
+├── docker-compose.yml
+└── .github/workflows/ci.yml
+```
 
-This is coursework for an individual third-year Cloud Computing module.
-No production data, real infrastructure, or real emergency-service
-integration is used or intended.
+## Configuration
+
+All secrets come from the environment and are never committed: services refuse to start
+with a missing, short or example value. `scripts/generate-secrets.sh` creates them
+(`.env` for Compose, `k8s/overlays/local/secrets.env` for Kubernetes). Notable settings:
+
+| Variable | Default | Effect |
+|---|---|---|
+| `RESPONSE_AUTO_APPROVE` | `false` | Execute response plans without waiting for an operator |
+| `AUTO_CONFIRM_MIN_SEVERITY` | `CRITICAL` | Detections at or above this become disasters automatically (`NONE` = always ask) |
+| `INTAKE_SOURCES` | `usgs,open-meteo` | Which public feeds to poll (`none` for offline demos) |
+| `WATCH_LATITUDE` / `WATCH_LONGITUDE` / `WATCH_RADIUS_KM` | Pune, 500 km | Area watched for earthquakes and weather |
+| `CARTO_BASEMAP_KEY` | empty | Basemap key for the maps (keyless tiles are watermarked) |
+
+## Limitations
+
+- **Decision support, not an emergency system.** The casualty model, the playbook and the
+  forecasts are transparent demo models with stated assumptions; they are not clinically or
+  operationally validated.
+- **Synthetic data.** Hospitals, ambulances, blood banks and substations are seeded sample data
+  for Pune; a fresh install also generates 72 hours of labelled synthetic hospital history.
+- **Single region.** One cluster and one PostgreSQL instance; high availability across zones
+  and regions is out of scope.
+- **Local only.** Designed to run on a laptop (Docker Compose or a local Kubernetes cluster);
+  no managed cloud deployment is included.
+
+## Acknowledgements
+
+Earthquake data: [USGS Earthquake Hazards Program](https://earthquake.usgs.gov/).
+Weather forecasts: [Open-Meteo](https://open-meteo.com/).
+Map data © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors, tiles by [CARTO](https://carto.com/attributions).
+
+---
+
+<sub>Built as an individual project for a third-year Cloud Computing module.</sub>
