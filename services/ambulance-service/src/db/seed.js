@@ -1,9 +1,12 @@
+import { readFileSync } from "node:fs";
+
 /**
- * Realistic demo data, idempotent on every startup. Coordinates spread
- * around the same Pune, India area as hospital-service's seed data so
- * cross-service demos (e.g. "nearest ambulance to this hospital")
- * produce sensible distances rather than ambulances scattered on
- * another continent.
+ * Demo fleet, idempotent on every startup. Vehicles and crews are
+ * synthetic (fleet data isn't public). Phase 21: each one starts at a REAL
+ * Pune hospital with an emergency department, from the OpenStreetMap
+ * snapshot (src/data/pune-hospitals.json; © OpenStreetMap contributors,
+ * ODbL): the largest ones first, one ambulance each. The coordinates below
+ * are only the fallback if the snapshot can't be read.
  */
 const SAMPLE_AMBULANCES = [
   { vehicleNumber: "MH12-AB-1001", latitude: 18.5236, longitude: 73.8737, driverName: "Rakesh Pawar", driverPhone: "+91-98220-10001", equipmentLevel: "ADVANCED" },
@@ -18,6 +21,16 @@ const SAMPLE_AMBULANCES = [
   { vehicleNumber: "MH12-AB-1010", latitude: 18.5400, longitude: 73.8600, driverName: "Kiran Chavan", driverPhone: "+91-98220-10010", equipmentLevel: "BASIC", status: "AT_HOSPITAL" },
 ];
 
+/** Real hospitals with an emergency department, largest first: the ambulances' stations. */
+export function ambulanceStations() {
+  try {
+    const snapshot = JSON.parse(readFileSync(new URL("../data/pune-hospitals.json", import.meta.url), "utf8"));
+    return snapshot.items.filter((h) => h.emergencyDepartment).sort((a, b) => b.totalBeds - a.totalBeds);
+  } catch {
+    return [];
+  }
+}
+
 export async function seedSampleAmbulances(pool) {
   const { rows } = await pool.query("SELECT COUNT(*)::int AS count FROM ambulances");
   if (rows[0].count > 0) {
@@ -25,14 +38,17 @@ export async function seedSampleAmbulances(pool) {
     return;
   }
 
-  for (const a of SAMPLE_AMBULANCES) {
+  const stations = ambulanceStations();
+  for (const [i, sample] of SAMPLE_AMBULANCES.entries()) {
+    const station = stations[i];
+    const a = station ? { ...sample, latitude: station.latitude, longitude: station.longitude } : sample;
     await pool.query(
       `INSERT INTO ambulances (vehicle_number, latitude, longitude, driver_name, driver_phone, equipment_level, status)
        VALUES ($1,$2,$3,$4,$5,$6,$7)`,
       [a.vehicleNumber, a.latitude, a.longitude, a.driverName, a.driverPhone, a.equipmentLevel, a.status || "AVAILABLE"]
     );
   }
-  console.log(`[ambulance-service] seeded ${SAMPLE_AMBULANCES.length} sample ambulances`);
+  console.log(`[ambulance-service] seeded ${SAMPLE_AMBULANCES.length} sample ambulances${stations.length ? `, stationed at ${Math.min(stations.length, SAMPLE_AMBULANCES.length)} real hospitals (OpenStreetMap)` : ""}`);
 }
 
 /**

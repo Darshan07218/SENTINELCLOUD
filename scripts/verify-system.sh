@@ -152,7 +152,7 @@ api_checks() { # label envfile
   # ---- 4 Hospital ------------------------------------------------------
   step "[$label] 4 Hospital service"
   ok=1 why=()
-  http GET "/hospitals?page=1&limit=50"
+  http GET "/hospitals?page=1&limit=200"
   local hcount hid hlat hlng
   hcount=$(printf '%s' "$HTTP_BODY" | js 'd.hospitals.length')
   hid=$(printf '%s' "$HTTP_BODY" | js 'd.hospitals[0]&&d.hospitals[0].id')

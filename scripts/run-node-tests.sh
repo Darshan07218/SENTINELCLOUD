@@ -49,7 +49,7 @@ run_file() {
   fi
 }
 
-for dir in services/*/ shared/node-security/ shared/node-broker/ tests/db/; do
+for dir in services/*/ shared/node-security/ shared/node-broker/ tests/db/ tests/data/; do
   dir=${dir%/}
   [[ -d "$dir" ]] || continue
   if [[ -d "$dir/tests" ]]; then

@@ -19,17 +19,23 @@ import { calculateOccupancyPercentage } from "./capacity.js";
 export const FORECAST_SETTINGS = Object.freeze({
   windowHours: 168, // history used: the last 7 days
   minHourlyPoints: 6, // fewer hourly points than this → INSUFFICIENT_DATA
-  alpha: 0.5, // level smoothing
-  beta: 0.3, // trend smoothing
-  // Trend damping per hour. 0.9 capped any projected rise at 9 × the hourly
-  // trend (a hospital filling 0.6 %/h for two days was projected +5 % for
-  // the next day); 0.98 still flattens a short burst but follows a trend
-  // that has held for days.
-  phi: 0.98,
+  // Phase 22: alpha, beta, phi and bandZ are tuned on REAL hospital
+  // occupancy (US HHS daily series, 6 states) on 2021–2022 and tested on
+  // 2023, which the tuning never saw (tools/validation/tuning-occupancy.json,
+  // docs/PHASE-22-VALIDATION.md §3). The Phase 18 settings (0.5 / 0.3 / 0.98 /
+  // 1.28) chased short-term swings as trends: 3× the error of "nothing
+  // changes" on 2023, and an "80 %" band that held 94 %. These: about the
+  // same error as "nothing changes" (slightly better) and a band holding
+  // 79 %. Real occupancy has little trend worth extending, so the trend is
+  // damped hard. Tuned on daily steps; the live forecast steps hourly, where
+  // damping the trend this hard is the cautious choice too.
+  alpha: 0.7, // level smoothing
+  beta: 0.05, // trend smoothing
+  phi: 0.5, // trend damping per step: a trend adds at most about one step's worth
   // "Full": the line where capacity.js raises a CRITICAL alert (fewer
   // than 10% of beds free).
   thresholdPct: 90,
-  bandZ: 1.28, // 80% prediction band
+  bandZ: 0.38, // calibrated so the band holds 80 % of outcomes (79 % on 2023)
 });
 
 export const RISK_LEVELS = ["LOW", "MODERATE", "HIGH", "CRITICAL"];

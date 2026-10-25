@@ -110,7 +110,7 @@ export default function CommandCenter() {
       fetchGatewayHealth(),
       fetchAllServiceHealth(),
       authFetch((t) => fetchHospitalSummary(t)),
-      authFetch((t) => fetchHospitals(t, { limit: 100 })),
+      authFetch((t) => fetchHospitals(t, { limit: 200 })),
       authFetch((t) => fetchHospitalAlerts(t)),
       authFetch((t) => fetchAmbulanceSummary(t)),
       authFetch((t) => fetchAmbulances(t, { limit: 100 })),

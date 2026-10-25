@@ -11,6 +11,14 @@ const STATUS_COLORS = {
   OVERLOADED: "#ef4444",
 };
 
+// Phase 21: how a hospital's bed numbers were obtained (OpenStreetMap rarely records them).
+const CAPACITY_SOURCE_LABELS = {
+  "osm:beds": "Beds from OpenStreetMap",
+  "estimated:footprint": "Beds estimated from building footprint",
+  "estimated:point": "Beds estimated (no building outline mapped)",
+  "estimated:major-point": "Beds estimated (major hospital, no outline mapped)",
+};
+
 const SEVERITY_COLORS = {
   CRITICAL: "#ef4444",
   WARNING: "#f59e0b",
@@ -50,7 +58,7 @@ export default function HospitalDashboard() {
   const loadAll = useCallback(async () => {
     const { values: v, error: loadError } = await settle({
       summary: authFetch((token) => fetchHospitalSummary(token)),
-      hospitals: authFetch((token) => fetchHospitals(token, { page: 1, limit: 50 })),
+      hospitals: authFetch((token) => fetchHospitals(token, { page: 1, limit: 200 })),
       alerts: authFetch((token) => fetchHospitalAlerts(token)),
     });
     if (v.summary) setSummary(v.summary.summary);
@@ -161,6 +169,7 @@ export default function HospitalDashboard() {
                   <td>
                     <div className="sc-cell-strong">{h.name}</div>
                     <div className="sc-cell-sub">{h.address}</div>
+                    {h.capacitySource && <div className="sc-cell-sub" title="Phase 21: name and location from OpenStreetMap; see docs/PHASE-21-REAL-DATA.md">{CAPACITY_SOURCE_LABELS[h.capacitySource] || h.capacitySource}{h.osmId && <> · <a href={`https://www.openstreetmap.org/${h.osmId}`} target="_blank" rel="noreferrer">OSM</a></>}</div>}
                   </td>
                   <td>
                     <Badge label={h.emergencyStatus} color={STATUS_COLORS[h.emergencyStatus] || "#64748b"} />

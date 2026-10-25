@@ -68,6 +68,23 @@ export function combineNeeds(disaster, impact) {
   };
 }
 
+/**
+ * Phase 22: what the validation says about this kind of estimate, in words
+ * (docs/PHASE-22-VALIDATION.md). Ratios are actual / estimated casualties in
+ * past Indian disasters.
+ */
+export function validationSentence(type, record) {
+  const kind = String(type || "event").toLowerCase().replace(/_/g, " ");
+  const fmt = (x) => (x >= 10 ? Math.round(x).toLocaleString("en-IN") : String(x));
+  if (!record || !record.events) {
+    return `No ${kind} with complete casualty figures to validate against; treat the estimate as indicative only.`;
+  }
+  if (record.events === 1) {
+    return `In the one past ${kind} checked, actual casualties were ${fmt(record.actualOverEstimateMin)}× this model's estimate: treat it as a lower bound.`;
+  }
+  return `In ${record.events} past ${kind}s checked, actual casualties were ${fmt(record.actualOverEstimateMin)}–${fmt(record.actualOverEstimateMax)}× this model's estimate: treat it as a lower bound.`;
+}
+
 /** Phase 20: a hospital never gives more than this share of its free beds to one plan. */
 export const MAX_RESERVE_SHARE = 0.8;
 /** At most this many hospitals per bed-reservation round. */
@@ -273,7 +290,8 @@ export function buildPlan({ disaster, reactions = {}, revision = 1, delivered = 
         params: { topic: "impact-estimate", population: impact.population, exposed: impact.exposed, casualties: impact.casualties },
         reason:
           `Estimate: ~${impact.population.toLocaleString("en-IN")} people live within ${radius} km, ~${impact.exposed.toLocaleString("en-IN")} exposed; ~${impact.casualties} casualties expected, ` +
-          `needing ~${impact.hospitalBeds} bed(s), ~${impact.icuBeds} ICU bed(s) and ~${impact.transport} ambulance transport(s). Demo model, not a forecast to act on alone.`,
+          `needing ~${impact.hospitalBeds} bed(s), ~${impact.icuBeds} ICU bed(s) and ~${impact.transport} ambulance transport(s). ` +
+          validationSentence(disaster.type, impact.assumptions?.validation),
       });
     }
     // Without an estimate, the old rule of thumb: about one ICU bed per ambulance sent.

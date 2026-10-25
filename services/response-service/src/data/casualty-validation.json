@@ -1,0 +1,32 @@
+{
+  "generatedBy": "tools/validation/validate-casualty-model.mjs --write (docs/PHASE-22-VALIDATION.md)",
+  "note": "Actual casualties divided by the model's estimate, over historical Indian disasters with complete reported figures. Above 1 means the model under-estimated.",
+  "overall": {
+    "events": 7,
+    "actualOverEstimateMin": 1.1,
+    "actualOverEstimateMax": 3556.4,
+    "medianFactorLow": 69.2
+  },
+  "byType": {
+    "EARTHQUAKE": {
+      "events": 4,
+      "actualOverEstimateMin": 1.1,
+      "actualOverEstimateMax": 117.8
+    },
+    "INDUSTRIAL_ACCIDENT": {
+      "events": 2,
+      "actualOverEstimateMin": 85.3,
+      "actualOverEstimateMax": 3556.4
+    },
+    "FIRE": {
+      "events": 1,
+      "actualOverEstimateMin": 69,
+      "actualOverEstimateMax": 69
+    }
+  },
+  "typesWithoutCompleteFigures": [
+    "LANDSLIDE",
+    "FLOOD",
+    "CYCLONE"
+  ]
+}

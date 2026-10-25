@@ -53,7 +53,9 @@ the full system end to end.
 | Area | What it does |
 |---|---|
 | **Automatic detection** | Polls USGS earthquakes and Open-Meteo rain and wind for the city; CRITICAL events auto-confirm, others go to an approval queue. Each source event is stored once. |
-| **Impact-based planning** | A population-density model (approximate Census 2011 densities for Pune) and per-type casualty rates size the response: beds, ICU, ambulances, blood. |
+| **Real data** | 101 real Pune hospitals and 31 substations from OpenStreetMap, blood banks and ambulances at real hospitals, and the WorldPop 2020 population grid; every estimated figure is labelled as such. |
+| **Impact-based planning** | The population in the affected area (WorldPop 2020) and per-type casualty rates size the response: beds, ICU, ambulances, blood. |
+| **Validated models** | The casualty model is checked against 11 historical Indian disasters, the bed forecast against real hospital occupancy (tuned on 2021–22, tested on 2023), the transformer projection against real transformer telemetry. |
 | **Resource reservation** | Approving a plan holds hospital beds and blood and dispatches ambulances; undo releases everything. Commands are idempotent and executed exactly once. |
 | **Forecasting** | 24-hour bed-occupancy forecast per hospital (damped Holt smoothing over a trigger-recorded history) and a 0–100 transformer-risk score; both feed the planner. |
 | **Reliable messaging** | Transactional outbox, publisher confirms, retries and dead-letter queues: no event is lost when the broker or a handler fails. |
@@ -221,6 +223,7 @@ kubectl apply --server-side -k k8s/overlays/local   # or k8s/overlays/local-keda
 | Unit (Java) | JUnit suites for both Spring Boot services (about 85 tests) |
 | Real PostgreSQL | Every migration as each service's restricted role, plus concurrency tests: dispatch races, exactly-once commands, outbox relays, bed reservations, plan settlement |
 | Monitoring rules | `promtool` unit tests for the alert rules |
+| Data and models | Snapshot copies and invariants; the casualty-model validation re-run on every test run, so the record the system quotes can't go stale |
 | End to end | `scripts/verify-system.sh`: brings the full stack up from clean and runs **15 system checks**, from authentication to automatic detection and bed reservation |
 
 The [CI pipeline](.github/workflows/ci.yml) runs the unit, integration,
@@ -241,10 +244,11 @@ end-to-end system check runs nightly and on demand.
 | [Event schema](docs/EVENT-SCHEMA.md) | Every routing key and payload on the event bus |
 | [Security](SECURITY.md) | Threat model and controls |
 | [Engineering review](docs/ENGINEERING-REVIEW.md) | Whole-system audit: findings, fixes, evidence |
-| [Roadmap](docs/ROADMAP.md) | The 20 delivered phases, each with its design, tests and verification record |
+| [Roadmap](docs/ROADMAP.md) | The 22 delivered phases, each with its design, tests and verification record |
 | [Kubernetes](docs/PHASE-9-KUBERNETES.md) · [Monitoring](docs/PHASE-10-MONITORING.md) · [Resilience](docs/PHASE-11-RESILIENCE.md) | Running, observing and breaking the platform on purpose |
 | [Reliable events](docs/PHASE-14-RELIABLE-EVENTS.md) · [Response engine](docs/PHASE-15-RESPONSE-ENGINE.md) · [Simulator](docs/PHASE-16-SIMULATOR.md) | Messaging guarantees, planning and command execution, demos |
 | [CI and KEDA](docs/PHASE-17-CI-AND-KEDA.md) · [Maps and forecasts](docs/PHASE-18-MAPS-AND-FORECASTS.md) · [Auto-detection](docs/PHASE-19-AUTO-DETECTION.md) · [Smarter response](docs/PHASE-20-SMARTER-RESPONSE.md) | Automation and decision support |
+| [Real data](docs/PHASE-21-REAL-DATA.md) · [Validation](docs/PHASE-22-VALIDATION.md) | Where the data comes from, and how well the models hold up against real events |
 
 ## Repository structure
 
@@ -281,11 +285,15 @@ with a missing, short or example value. `scripts/generate-secrets.sh` creates th
 
 ## Limitations
 
-- **Decision support, not an emergency system.** The casualty model, the playbook and the
-  forecasts are transparent demo models with stated assumptions; they are not clinically or
-  operationally validated.
-- **Synthetic data.** Hospitals, ambulances, blood banks and substations are seeded sample data
-  for Pune; a fresh install also generates 72 hours of labelled synthetic hospital history.
+- **Decision support, not an emergency system.** The models are validated against real data,
+  and the results set their limits: the casualty estimate under-estimated every severe historical
+  event it was tested on (median ×69), so each plan presents it as a lower bound; the bed forecast
+  is about as accurate as assuming no change; transformer early warning of overheating is untested.
+  See [Validation](docs/PHASE-22-VALIDATION.md).
+- **Partly estimated data.** Facilities, locations and population are real (OpenStreetMap,
+  WorldPop); bed counts are estimated from building footprints, and live capacity, blood stock,
+  transformers, ambulance crews and the first 72 hours of hospital history are synthetic,
+  because no public source exists. Every estimated figure is labelled.
 - **Single region.** One cluster and one PostgreSQL instance; high availability across zones
   and regions is out of scope.
 - **Local only.** Designed to run on a laptop (Docker Compose or a local Kubernetes cluster);
@@ -294,6 +302,9 @@ with a missing, short or example value. `scripts/generate-secrets.sh` creates th
 ## Acknowledgements
 
 Earthquake data: [USGS Earthquake Hazards Program](https://earthquake.usgs.gov/).
+Facilities: © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors (ODbL).
+Population: [WorldPop](https://www.worldpop.org/) (CC BY 4.0), doi:10.5258/SOTON/WP00671.
+Validation data: US HHS hospital capacity time series ([healthdata.gov](https://healthdata.gov/)); [ETDataset](https://github.com/zhouhaoyi/ETDataset) (Zhou et al., AAAI 2021).
 Weather forecasts: [Open-Meteo](https://open-meteo.com/).
 Map data © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors, tiles by [CARTO](https://carto.com/attributions).
 

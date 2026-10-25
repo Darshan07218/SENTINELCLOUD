@@ -1,0 +1,52 @@
+{
+  "generatedBy": "tools/validation/backtest-occupancy.mjs --tune",
+  "horizons": [
+    1,
+    7,
+    14
+  ],
+  "forms": {
+    "plain": {
+      "alpha": 0.7,
+      "beta": 0.05,
+      "phi": 0.5,
+      "anchor": false,
+      "mae": 0.9761115756821126,
+      "maeTrain": 0.98,
+      "maeTest2023": 0.89
+    },
+    "anchored": {
+      "alpha": 0.2,
+      "beta": 0,
+      "phi": 0.95,
+      "anchor": true,
+      "mae": 0.979881324632227,
+      "maeTrain": 0.98,
+      "maeTest2023": 0.91
+    }
+  },
+  "trainedOn": {
+    "from": "2021-01-01",
+    "to": "2022-12-31"
+  },
+  "testedOn": {
+    "from": "2023-01-01",
+    "to": "2023-12-31"
+  },
+  "tuned": {
+    "alpha": 0.7,
+    "beta": 0.05,
+    "phi": 0.5,
+    "anchor": false,
+    "bandZ": 0.38
+  },
+  "test2023": {
+    "maePhase18Settings": 2.82,
+    "maeTunedSettings": 0.89,
+    "maePersistence": 0.91,
+    "skillPhase18": -2.1,
+    "skillTuned": 0.02,
+    "bandCoveragePhase18": 0.94,
+    "bandCoverageTuned": 0.79
+  }
+}

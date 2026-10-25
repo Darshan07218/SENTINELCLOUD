@@ -1,5 +1,7 @@
 package com.sentinelcloud.bloodbank.seed;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sentinelcloud.bloodbank.domain.BloodGroup;
 import com.sentinelcloud.bloodbank.domain.RhFactor;
 import com.sentinelcloud.bloodbank.entity.BloodBank;
@@ -14,16 +16,22 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.io.InputStream;
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 
 /**
  * Idempotent demo data, seeded once on first startup (skipped if data
  * already exists) — same pattern as hospital-service's and
- * ambulance-service's seed scripts. Coordinates are real Pune, India
- * locations matching this project's other seeded services, so
- * cross-service "near me" demos produce sensible distances.
+ * ambulance-service's seed scripts.
+ *
+ * Phase 21: each blood bank sits at a REAL Pune hospital that hosts one
+ * (location, address and phone from the OpenStreetMap snapshot in
+ * resources/data/pune-hospitals.json; © OpenStreetMap contributors, ODbL).
+ * OpenStreetMap has no blood banks for Pune, so the host hospital stands in
+ * for the location; the stock, batches and demand history are synthetic.
  */
 @Component
 public class DemoDataSeeder implements ApplicationRunner {
@@ -69,15 +77,13 @@ public class DemoDataSeeder implements ApplicationRunner {
             return;
         }
 
-        BloodBank pune1 = bloodBankRepository.save(new BloodBank(
-            "Pune Regional Blood Bank", "Sassoon Rd, Pune, Maharashtra 411001", 18.5236, 73.8737,
-            "+91-20-2612-8100", null));
-        BloodBank pune2 = bloodBankRepository.save(new BloodBank(
-            "Ruby Hall Blood Centre", "40, Sassoon Rd, Pune, Maharashtra 411001", 18.5308, 73.8794,
-            "+91-20-6645-5200", null));
-        BloodBank pune3 = bloodBankRepository.save(new BloodBank(
-            "Deenanath Mangeshkar Blood Bank", "Erandwane, Pune, Maharashtra 411004", 18.5018, 73.8288,
-            "+91-20-4015-1100", null));
+        List<JsonNode> hospitals = loadHospitalSnapshot();
+        BloodBank pune1 = bloodBankRepository.save(hostedAt(hospitals, "Sassoon", "Sassoon Hospital Blood Bank",
+            new double[]{18.5236, 73.8737}, "Sassoon Rd, Pune, Maharashtra 411001"));
+        BloodBank pune2 = bloodBankRepository.save(hostedAt(hospitals, "KEM Hospital", "KEM Hospital Blood Bank",
+            new double[]{18.5096, 73.8644}, "Rasta Peth, Pune, Maharashtra 411011"));
+        BloodBank pune3 = bloodBankRepository.save(hostedAt(hospitals, "Deenanath Mangeshkar", "Deenanath Mangeshkar Hospital Blood Bank",
+            new double[]{18.5018, 73.8288}, "Erandwane, Pune, Maharashtra 411004"));
 
         LocalDate today = LocalDate.now();
 
@@ -100,7 +106,31 @@ public class DemoDataSeeder implements ApplicationRunner {
         seedBatch(pune3, BloodGroup.O, RhFactor.POSITIVE, 16, today.minusDays(6), today.plusDays(36));
         seedBatch(pune3, BloodGroup.A, RhFactor.POSITIVE, 11, today.minusDays(18), today.plusDays(24));
 
-        System.out.println("[blood-bank-service] seeded 3 blood banks with sample inventory batches");
+        System.out.println("[blood-bank-service] seeded 3 blood banks at real Pune hospitals (OpenStreetMap) with sample inventory batches");
+    }
+
+    /** The Phase 21 hospital snapshot (empty if it can't be read: the fallbacks below are used). */
+    static List<JsonNode> loadHospitalSnapshot() {
+        try (InputStream in = DemoDataSeeder.class.getResourceAsStream("/data/pune-hospitals.json")) {
+            if (in == null) return List.of();
+            List<JsonNode> items = new ArrayList<>();
+            new ObjectMapper().readTree(in).path("items").forEach(items::add);
+            return items;
+        } catch (Exception e) {
+            System.err.println("[blood-bank-service] hospital snapshot unreadable, using fallback locations: " + e.getMessage());
+            return List.of();
+        }
+    }
+
+    /** A blood bank at the first snapshot hospital whose name contains `namePart`, else at the fallback. */
+    static BloodBank hostedAt(List<JsonNode> hospitals, String namePart, String bankName, double[] fallbackLatLng, String fallbackAddress) {
+        for (JsonNode h : hospitals) {
+            if (h.path("name").asText().contains(namePart)) {
+                String phone = h.path("phone").isTextual() && !h.path("phone").asText().isBlank() ? h.path("phone").asText() : "not listed in OSM";
+                return new BloodBank(bankName, h.path("address").asText(fallbackAddress), h.path("latitude").asDouble(), h.path("longitude").asDouble(), phone, null);
+            }
+        }
+        return new BloodBank(bankName, fallbackAddress, fallbackLatLng[0], fallbackLatLng[1], "not listed in OSM", null);
     }
 
     private void seedBatch(BloodBank bank, BloodGroup group, RhFactor rh, int units, LocalDate collected, LocalDate expires) {

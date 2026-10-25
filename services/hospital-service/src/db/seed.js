@@ -1,136 +1,29 @@
-/**
- * Realistic demo data so the service is immediately useful after
- * `docker compose up` — a hospital dashboard with zero hospitals in it
- * doesn't demonstrate much. Idempotent: re-running on every startup is
- * safe because it only inserts when the table is empty.
- *
- * Coordinates are real Pune, India locations (matching this project's
- * dev context) spread widely enough to meaningfully exercise the
- * GET /hospitals/near radius search.
- */
-const SAMPLE_HOSPITALS = [
-  {
-    name: "Sassoon General Hospital",
-    address: "Sassoon Rd, Pune, Maharashtra 411001",
-    latitude: 18.5236,
-    longitude: 73.8737,
-    emergencyContactName: "Dr. Anjali Deshmukh",
-    emergencyContactPhone: "+91-20-2612-8000",
-    totalBeds: 400,
-    availableBeds: 62,
-    totalIcuBeds: 40,
-    availableIcuBeds: 3,
-    totalVentilators: 25,
-    availableVentilators: 4,
-  },
-  {
-    name: "Ruby Hall Clinic",
-    address: "40, Sassoon Rd, Pune, Maharashtra 411001",
-    latitude: 18.5308,
-    longitude: 73.8794,
-    emergencyContactName: "Dr. Vikram Rao",
-    emergencyContactPhone: "+91-20-6645-5100",
-    totalBeds: 550,
-    availableBeds: 210,
-    totalIcuBeds: 60,
-    availableIcuBeds: 18,
-    totalVentilators: 40,
-    availableVentilators: 22,
-  },
-  {
-    name: "Jehangir Hospital",
-    address: "32, Sassoon Rd, Pune, Maharashtra 411001",
-    latitude: 18.5279,
-    longitude: 73.8781,
-    emergencyContactName: "Dr. Meera Iyer",
-    emergencyContactPhone: "+91-20-6681-9999",
-    totalBeds: 320,
-    availableBeds: 8,
-    totalIcuBeds: 30,
-    availableIcuBeds: 0,
-    totalVentilators: 18,
-    availableVentilators: 0,
-  },
-  {
-    name: "Deenanath Mangeshkar Hospital",
-    address: "Erandwane, Pune, Maharashtra 411004",
-    latitude: 18.5018,
-    longitude: 73.8288,
-    emergencyContactName: "Dr. Suresh Patil",
-    emergencyContactPhone: "+91-20-4015-1000",
-    totalBeds: 470,
-    availableBeds: 155,
-    totalIcuBeds: 55,
-    availableIcuBeds: 12,
-    totalVentilators: 35,
-    availableVentilators: 14,
-  },
-  {
-    name: "Aditya Birla Memorial Hospital",
-    address: "Chinchwad, Pune, Maharashtra 411033",
-    latitude: 18.6298,
-    longitude: 73.7997,
-    emergencyContactName: "Dr. Kavita Joshi",
-    emergencyContactPhone: "+91-20-3071-6300",
-    totalBeds: 260,
-    availableBeds: 140,
-    totalIcuBeds: 25,
-    availableIcuBeds: 9,
-    totalVentilators: 15,
-    availableVentilators: 8,
-  },
-  {
-    name: "Command Hospital Southern Command",
-    address: "Wanowrie, Pune, Maharashtra 411040",
-    latitude: 18.4901,
-    longitude: 73.9003,
-    emergencyContactName: "Col. Dr. Ashok Nair",
-    emergencyContactPhone: "+91-20-2669-2000",
-    totalBeds: 600,
-    availableBeds: 310,
-    totalIcuBeds: 70,
-    availableIcuBeds: 41,
-    totalVentilators: 45,
-    availableVentilators: 30,
-  },
-  {
-    name: "Noble Hospital",
-    address: "Magarpatta Rd, Hadapsar, Pune, Maharashtra 411013",
-    latitude: 18.5089,
-    longitude: 73.9260,
-    emergencyContactName: "Dr. Priya Kulkarni",
-    emergencyContactPhone: "+91-20-6721-8000",
-    totalBeds: 200,
-    availableBeds: 4,
-    totalIcuBeds: 20,
-    availableIcuBeds: 1,
-    totalVentilators: 12,
-    availableVentilators: 1,
-  },
-  {
-    name: "Sahyadri Super Speciality Hospital",
-    address: "Karve Rd, Pune, Maharashtra 411004",
-    latitude: 18.5030,
-    longitude: 73.8262,
-    emergencyContactName: "Dr. Rahul Bhosale",
-    emergencyContactPhone: "+91-20-6721-2000",
-    totalBeds: 180,
-    availableBeds: 95,
-    totalIcuBeds: 18,
-    availableIcuBeds: 7,
-    totalVentilators: 10,
-    availableVentilators: 6,
-  },
-];
+import { readFileSync } from "node:fs";
 
 /**
- * The overloaded-hospital demo needs at least one hospital explicitly
- * flagged OVERLOADED, on top of the ones that are merely
- * algorithmically low on capacity — this is the difference the
- * capacity.js comment describes between computed alerts and an
- * operator's explicit declaration.
+ * Phase 21: the hospitals are REAL Pune hospitals from OpenStreetMap
+ * (src/data/pune-hospitals.json, built by tools/real-data/build-snapshots.mjs;
+ * © OpenStreetMap contributors, ODbL). Names, locations, addresses and
+ * phone numbers come from OSM. Bed, ICU and ventilator totals are ESTIMATES
+ * unless capacity_source is osm:beds (OSM almost never records them), and
+ * the starting availability is synthetic. Each row keeps its osm_id and
+ * capacity_source so the API and the dashboard can say so.
+ *
+ * Idempotent: only inserts when the table is empty.
  */
-const OVERLOADED_HOSPITAL_NAME = "Jehangir Hospital";
+const SNAPSHOT_URL = new URL("../data/pune-hospitals.json", import.meta.url);
+
+export function loadHospitalSnapshot() {
+  return JSON.parse(readFileSync(SNAPSHOT_URL, "utf8"));
+}
+
+/**
+ * One hospital starts flagged OVERLOADED, so the overloaded-hospital views
+ * have something to show: an operator's explicit declaration, distinct from
+ * the computed low-capacity alerts (see capacity.js). Demo state, not a claim
+ * about the real hospital.
+ */
+export const OVERLOADED_DEMO_NAME_PATTERN = /Jehangir/i;
 
 export async function seedSampleHospitals(pool) {
   const { rows } = await pool.query("SELECT COUNT(*)::int AS count FROM hospitals");
@@ -139,7 +32,11 @@ export async function seedSampleHospitals(pool) {
     return;
   }
 
-  for (const h of SAMPLE_HOSPITALS) {
+  const snapshot = loadHospitalSnapshot();
+  let overloadedSet = false;
+  for (const h of snapshot.items) {
+    const overloaded = !overloadedSet && OVERLOADED_DEMO_NAME_PATTERN.test(h.name);
+    if (overloaded) overloadedSet = true;
     await pool.query(
       `INSERT INTO hospitals (
          name, address, latitude, longitude,
@@ -147,27 +44,29 @@ export async function seedSampleHospitals(pool) {
          total_beds, available_beds,
          total_icu_beds, available_icu_beds,
          total_ventilators, available_ventilators,
-         emergency_status
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+         emergency_status, osm_id, capacity_source
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
       [
         h.name,
         h.address,
         h.latitude,
         h.longitude,
-        h.emergencyContactName,
-        h.emergencyContactPhone,
+        h.emergencyDepartment ? "Emergency department" : "Front desk",
+        h.phone || "not listed in OSM",
         h.totalBeds,
-        h.availableBeds,
+        overloaded ? Math.min(h.availableBeds, Math.floor(h.totalBeds * 0.03)) : h.availableBeds,
         h.totalIcuBeds,
-        h.availableIcuBeds,
+        overloaded ? 0 : h.availableIcuBeds,
         h.totalVentilators,
         h.availableVentilators,
-        h.name === OVERLOADED_HOSPITAL_NAME ? "OVERLOADED" : "NORMAL",
+        overloaded ? "OVERLOADED" : "NORMAL",
+        h.osmId,
+        h.capacitySource,
       ]
     );
   }
 
-  console.log(`[hospital-service] seeded ${SAMPLE_HOSPITALS.length} sample hospitals`);
+  console.log(`[hospital-service] seeded ${snapshot.items.length} real Pune hospitals from OpenStreetMap (retrieved ${snapshot.retrievedAt.slice(0, 10)}; capacities estimated)`);
 }
 
 // ---------------------------------------------------------------------

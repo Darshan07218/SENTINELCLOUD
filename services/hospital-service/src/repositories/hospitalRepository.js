@@ -26,6 +26,9 @@ function mapRow(row) {
     availableVentilators: row.available_ventilators,
     emergencyStatus: row.emergency_status,
     managedByUserId: row.managed_by_user_id,
+    // Phase 21: provenance (OpenStreetMap element, how capacity was obtained).
+    osmId: row.osm_id ?? null,
+    capacitySource: row.capacity_source ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

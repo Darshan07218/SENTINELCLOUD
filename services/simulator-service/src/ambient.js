@@ -76,7 +76,7 @@ export function createAmbient({ client, log = console, random = Math.random, tic
     const { emergencies = [] } = (await client.get("/ambulances/emergencies/active", { priority: "ambient" })) || {};
     const byId = new Map(emergencies.map((e) => [e.id, e]));
     let hospitals = null;
-    const hospitalList = async () => (hospitals ??= ((await client.get("/hospitals?limit=100", { priority: "ambient" })) || {}).hospitals || []);
+    const hospitalList = async () => (hospitals ??= ((await client.get("/hospitals?limit=200", { priority: "ambient" })) || {}).hospitals || []);
 
     for (const a of onCall) {
       const emergency = byId.get(a.assignedEmergencyId) || null;

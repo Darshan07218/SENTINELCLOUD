@@ -1,0 +1,377 @@
+{
+ "dataset": "Pune power substations",
+ "source": "OpenStreetMap via the Overpass API",
+ "license": "Open Database License (ODbL) 1.0; © OpenStreetMap contributors, https://www.openstreetmap.org/copyright",
+ "retrievedAt": "2026-10-25T10:06:22.992Z",
+ "area": "within 20 km of Pune (18.5204, 73.8567)",
+ "selection": "power=substation, named or rated 22 kV and above",
+ "estimates": "Locations, names, operators and voltages are from OpenStreetMap; transformers and their telemetry are synthetic (not public).",
+ "items": [
+  {
+   "osmId": "way/219767495",
+   "name": "Navi Peth Upakendra",
+   "latitude": 18.50909,
+   "longitude": 73.84059,
+   "operator": null,
+   "voltageKv": [
+    22,
+    11
+   ],
+   "maxVoltageKv": 22,
+   "distanceKm": 2.1
+  },
+  {
+   "osmId": "way/1488589031",
+   "name": "Range Hills Depot RSS",
+   "latitude": 18.54232,
+   "longitude": 73.84804,
+   "operator": null,
+   "voltageKv": [],
+   "maxVoltageKv": null,
+   "distanceKm": 2.6
+  },
+  {
+   "osmId": "way/206835626",
+   "name": "Chaturshringi Substation",
+   "latitude": 18.53932,
+   "longitude": 73.83056,
+   "operator": null,
+   "voltageKv": [],
+   "maxVoltageKv": null,
+   "distanceKm": 3.5
+  },
+  {
+   "osmId": "way/206835629",
+   "name": "Sinhagad Road Substation (Parvati)",
+   "latitude": 18.49115,
+   "longitude": 73.83568,
+   "operator": "MSEDCL",
+   "voltageKv": [
+    220
+   ],
+   "maxVoltageKv": 220,
+   "distanceKm": 3.9
+  },
+  {
+   "osmId": "way/206835634",
+   "name": "132 kV substation 206835634",
+   "latitude": 18.49664,
+   "longitude": 73.81754,
+   "operator": "MSETCL",
+   "voltageKv": [
+    132
+   ],
+   "maxVoltageKv": 132,
+   "distanceKm": 4.9
+  },
+  {
+   "osmId": "way/206835633",
+   "name": "Dahanukar Colony Substation",
+   "latitude": 18.49534,
+   "longitude": 73.80938,
+   "operator": "MSEDCL",
+   "voltageKv": [],
+   "maxVoltageKv": null,
+   "distanceKm": 5.7
+  },
+  {
+   "osmId": "way/210344053",
+   "name": "Baner Substation",
+   "latitude": 18.54998,
+   "longitude": 73.80543,
+   "operator": null,
+   "voltageKv": [],
+   "maxVoltageKv": null,
+   "distanceKm": 6.3
+  },
+  {
+   "osmId": "way/221914643",
+   "name": "Khadki",
+   "latitude": 18.57715,
+   "longitude": 73.85381,
+   "operator": null,
+   "voltageKv": [
+    220
+   ],
+   "maxVoltageKv": 220,
+   "distanceKm": 6.3
+  },
+  {
+   "osmId": "way/206835627",
+   "name": "Mundhwa Substation",
+   "latitude": 18.52236,
+   "longitude": 73.91697,
+   "operator": "MSEDCL",
+   "voltageKv": [
+    132
+   ],
+   "maxVoltageKv": 132,
+   "distanceKm": 6.4
+  },
+  {
+   "osmId": "way/215586305",
+   "name": "220 KV Magarpatta ss",
+   "latitude": 18.52266,
+   "longitude": 73.93683,
+   "operator": null,
+   "voltageKv": [
+    220
+   ],
+   "maxVoltageKv": 220,
+   "distanceKm": 8.5
+  },
+  {
+   "osmId": "way/1482271322",
+   "name": "Nanded city",
+   "latitude": 18.46404,
+   "longitude": 73.79868,
+   "operator": null,
+   "voltageKv": [
+    220
+   ],
+   "maxVoltageKv": 220,
+   "distanceKm": 8.8
+  },
+  {
+   "osmId": "way/221914593",
+   "name": "Kharadi",
+   "latitude": 18.56801,
+   "longitude": 73.93376,
+   "operator": null,
+   "voltageKv": [],
+   "maxVoltageKv": null,
+   "distanceKm": 9.7
+  },
+  {
+   "osmId": "way/1489713653",
+   "name": "22/11 KV Khadakwasla Sub station",
+   "latitude": 18.4473,
+   "longitude": 73.78882,
+   "operator": "MSEB",
+   "voltageKv": [
+    22
+   ],
+   "maxVoltageKv": 22,
+   "distanceKm": 10.8
+  },
+  {
+   "osmId": "way/215586296",
+   "name": "Serum",
+   "latitude": 18.5161,
+   "longitude": 73.96022,
+   "operator": null,
+   "voltageKv": [
+    220
+   ],
+   "maxVoltageKv": 220,
+   "distanceKm": 10.9
+  },
+  {
+   "osmId": "way/1482272023",
+   "name": "Kondhawa",
+   "latitude": 18.4268,
+   "longitude": 73.89732,
+   "operator": null,
+   "voltageKv": [
+    220
+   ],
+   "maxVoltageKv": 220,
+   "distanceKm": 11.3
+  },
+  {
+   "osmId": "way/221914642",
+   "name": "132 KV Phursungi ss",
+   "latitude": 18.47883,
+   "longitude": 73.9567,
+   "operator": null,
+   "voltageKv": [
+    132
+   ],
+   "maxVoltageKv": 132,
+   "distanceKm": 11.5
+  },
+  {
+   "osmId": "way/206485498",
+   "name": "132 KV Rahatani ss",
+   "latitude": 18.59704,
+   "longitude": 73.7814,
+   "operator": null,
+   "voltageKv": [
+    132
+   ],
+   "maxVoltageKv": 132,
+   "distanceKm": 11.6
+  },
+  {
+   "osmId": "way/221914609",
+   "name": "220 KV Phursungi ss",
+   "latitude": 18.47481,
+   "longitude": 73.95564,
+   "operator": null,
+   "voltageKv": [
+    220
+   ],
+   "maxVoltageKv": 220,
+   "distanceKm": 11.6
+  },
+  {
+   "osmId": "way/221914590",
+   "name": "Bhosari",
+   "latitude": 18.63204,
+   "longitude": 73.83214,
+   "operator": null,
+   "voltageKv": [
+    220
+   ],
+   "maxVoltageKv": 220,
+   "distanceKm": 12.7
+  },
+  {
+   "osmId": "way/221914672",
+   "name": "Flagship",
+   "latitude": 18.57593,
+   "longitude": 73.74359,
+   "operator": null,
+   "voltageKv": [
+    220
+   ],
+   "maxVoltageKv": 220,
+   "distanceKm": 13.4
+  },
+  {
+   "osmId": "way/359554864",
+   "name": "MSEDCL Blueridge School 22kV/433V Substation",
+   "latitude": 18.57773,
+   "longitude": 73.74191,
+   "operator": null,
+   "voltageKv": [
+    22,
+    0.433
+   ],
+   "maxVoltageKv": 22,
+   "distanceKm": 13.7
+  },
+  {
+   "osmId": "way/237621726",
+   "name": "Bhosari 2",
+   "latitude": 18.64398,
+   "longitude": 73.84376,
+   "operator": null,
+   "voltageKv": [
+    220
+   ],
+   "maxVoltageKv": 220,
+   "distanceKm": 13.8
+  },
+  {
+   "osmId": "way/221914670",
+   "name": "MSETCL 220 kV Hinjewadi-I Substation",
+   "latitude": 18.58593,
+   "longitude": 73.73735,
+   "operator": "MSETCL",
+   "voltageKv": [
+    22
+   ],
+   "maxVoltageKv": 22,
+   "distanceKm": 14.5
+  },
+  {
+   "osmId": "way/221914592",
+   "name": "Chinchwad",
+   "latitude": 18.63763,
+   "longitude": 73.77319,
+   "operator": null,
+   "voltageKv": [
+    220,
+    132
+   ],
+   "maxVoltageKv": 220,
+   "distanceKm": 15.7
+  },
+  {
+   "osmId": "way/221914662",
+   "name": "220 KV Telco EHV Cons",
+   "latitude": 18.65652,
+   "longitude": 73.81233,
+   "operator": null,
+   "voltageKv": [
+    220
+   ],
+   "maxVoltageKv": 220,
+   "distanceKm": 15.8
+  },
+  {
+   "osmId": "way/1482788447",
+   "name": "Infosys",
+   "latitude": 18.59706,
+   "longitude": 73.71746,
+   "operator": null,
+   "voltageKv": [
+    220
+   ],
+   "maxVoltageKv": 220,
+   "distanceKm": 17
+  },
+  {
+   "osmId": "way/221914652",
+   "name": "Markal",
+   "latitude": 18.66327,
+   "longitude": 73.78741,
+   "operator": null,
+   "voltageKv": [
+    132
+   ],
+   "maxVoltageKv": 132,
+   "distanceKm": 17.5
+  },
+  {
+   "osmId": "way/294763736",
+   "name": "Hinjawadi",
+   "latitude": 18.58751,
+   "longitude": 73.70632,
+   "operator": null,
+   "voltageKv": [
+    220
+   ],
+   "maxVoltageKv": 220,
+   "distanceKm": 17.5
+  },
+  {
+   "osmId": "way/294738130",
+   "name": "Pirangut",
+   "latitude": 18.52355,
+   "longitude": 73.66915,
+   "operator": null,
+   "voltageKv": [
+    220
+   ],
+   "maxVoltageKv": 220,
+   "distanceKm": 19.8
+  },
+  {
+   "osmId": "way/789711162",
+   "name": "Pegasis",
+   "latitude": 18.57965,
+   "longitude": 73.67899,
+   "operator": null,
+   "voltageKv": [
+    220
+   ],
+   "maxVoltageKv": 220,
+   "distanceKm": 19.9
+  },
+  {
+   "osmId": "way/221914601",
+   "name": "220 KV Theur",
+   "latitude": 18.51747,
+   "longitude": 74.04645,
+   "operator": null,
+   "voltageKv": [
+    220,
+    132
+   ],
+   "maxVoltageKv": 220,
+   "distanceKm": 20
+  }
+ ]
+}

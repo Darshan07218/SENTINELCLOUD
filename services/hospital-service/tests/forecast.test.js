@@ -90,26 +90,31 @@ describe("forecastOccupancy", () => {
     assert.ok(f.forecast.every((p) => p.low <= p.pct && p.pct <= p.high));
   });
 
-  test("a filling hospital is projected upward and gets an ETA to the 90 % line", () => {
+  // Phase 22: tuned on real occupancy, the forecast follows a trend's
+  // direction but no longer projects it far (real occupancy mean-reverts;
+  // extending trends tripled the error). See docs/PHASE-22-VALIDATION.md §3.
+  test("a filling hospital: the forecast stays near the current level (no long trend extrapolation)", () => {
     // +0.6 % per hour for two days, now at 82 %.
     const f = forecastOccupancy(
       hourly(48, (k) => 82 - 0.6 * k),
       { nowMs: NOW, horizonHours: 24 }
     );
     assert.equal(f.currentPct, 82);
-    assert.ok(f.trendPctPerHour > 0.4, `trend ${f.trendPctPerHour}`);
-    assert.ok(f.predictedPct > 85);
-    assert.ok(f.hoursToThreshold != null && f.hoursToThreshold <= 24);
-    assert.ok(["HIGH", "CRITICAL"].includes(f.risk));
+    assert.ok(f.trendPctPerHour > 0, `trend ${f.trendPctPerHour}`);
+    // The smoothed level lags a steady rise a little, so the forecast can start
+    // just under the latest reading; it never runs away from it.
+    assert.ok(Math.abs(f.predictedPct - 82) < 2, `predicted ${f.predictedPct}`);
+    assert.equal(f.hoursToThreshold, null, "82 % is not projected past 90 %");
+    assert.equal(f.risk, "MODERATE");
   });
 
-  test("an emptying hospital trends down", () => {
+  test("an emptying hospital: likewise near the current level", () => {
     const f = forecastOccupancy(
       hourly(48, (k) => 50 + 0.5 * k),
       { nowMs: NOW, horizonHours: 12 }
     );
     assert.ok(f.trendPctPerHour < 0);
-    assert.ok(f.predictedPct < 50);
+    assert.ok(Math.abs(f.predictedPct - 50) < 2, `predicted ${f.predictedPct}`);
   });
 
   test("the forecast never leaves 0–100 %", () => {

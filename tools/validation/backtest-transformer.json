@@ -1,0 +1,11 @@
+{
+  "generatedBy": "RiskForecasterBacktest (power-service tests)",
+  "data": "ETDataset ETTh1, hourly oil temperature",
+  "origins": 718,
+  "horizons": {
+    "1": {"maeProjection": 0.519, "maePersistence": 0.508, "skill": -0.022},
+    "6": {"maeProjection": 1.262, "maePersistence": 1.223, "skill": -0.032},
+    "12": {"maeProjection": 1.787, "maePersistence": 1.720, "skill": -0.039},
+    "24": {"maeProjection": 2.186, "maePersistence": 1.990, "skill": -0.099}
+  }
+}

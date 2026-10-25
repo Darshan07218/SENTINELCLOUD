@@ -41,7 +41,7 @@ function Invoke-TestFile([string]$Dir, [string]$File) {
   }
 }
 
-$dirs = @(Get-ChildItem services -Directory | ForEach-Object { "services/$($_.Name)" }) + @("shared/node-security", "shared/node-broker")
+$dirs = @(Get-ChildItem services -Directory | ForEach-Object { "services/$($_.Name)" }) + @("shared/node-security", "shared/node-broker", "tests/data")
 if ($env:SC_DB_TEST -eq "1") { $dirs += "tests/db" }
 foreach ($dir in $dirs) {
   if (-not (Test-Path $dir)) { continue }

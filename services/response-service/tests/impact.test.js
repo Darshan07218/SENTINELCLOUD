@@ -1,14 +1,26 @@
 // Phase 20: the impact estimate and the plans built from it.
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { estimateImpact, populationWithin, densityAt, RURAL_DENSITY, FIRST_WAVE_MAX_AMBULANCES } from "../src/impact.js";
+import { estimateImpact, populationWithin, densityAt, gridDensityAt, POPULATION_GRID, POPULATION_ZONES, RURAL_DENSITY, FIRST_WAVE_MAX_AMBULANCES } from "../src/impact.js";
 import { buildPlan, combineNeeds, allocateBeds, rankHospitals, pickReceivingHospital, fillsSoon, ACTION_KINDS, MAX_RESERVE_SHARE } from "../src/playbook.js";
 
 const PUNE = { latitude: 18.52, longitude: 73.855 };
 
 describe("population model", () => {
-  test("the PMC circle holds roughly its census population (3.1 M in 2011, ± 20 %)", () => {
+  // Phase 21: the WorldPop 2020 grid is loaded and used.
+  test("the WorldPop grid is loaded and covers Pune", () => {
+    assert.ok(POPULATION_GRID, "grid file missing: run tools/real-data/build-population.mjs");
+    assert.ok(gridDensityAt(18.52, 73.855) > 1000, "dense city centre");
+    assert.equal(gridDensityAt(28.6, 77.2), null, "Delhi is outside the grid");
+  });
+
+  test("a 9 km circle over central Pune: millions of people in 2020 (2011 census PMC: 3.1 M)", () => {
     const p = populationWithin(18.52, 73.855, 9);
+    assert.ok(p > 3e6 && p < 7e6, `${p}`);
+  });
+
+  test("without the grid, the census-2011 zone model gives about the PMC census figure (± 20 %)", () => {
+    const p = populationWithin(18.52, 73.855, 9, POPULATION_ZONES, null);
     assert.ok(p > 2.6e6 && p < 3.8e6, `${p}`);
   });
 
@@ -167,5 +179,25 @@ describe("buildPlan with an impact estimate", () => {
       [["h1", 5]]
     );
     assert.equal(rev2.actions.some((a) => a.params?.topic === "impact-estimate"), false, "the estimate notice is for the first plan");
+  });
+});
+
+// Phase 22: every plan states the model's validated record.
+describe("validationSentence", async () => {
+  const { validationSentence } = await import("../src/playbook.js");
+  test("several past events: the range, and 'lower bound'", () => {
+    const s = validationSentence("EARTHQUAKE", { events: 4, actualOverEstimateMin: 1.1, actualOverEstimateMax: 117.8 });
+    assert.match(s, /4 past earthquakes/);
+    assert.match(s, /1\.1–118×/);
+    assert.match(s, /lower bound/);
+  });
+  test("one past event, and none", () => {
+    assert.match(validationSentence("FIRE", { events: 1, actualOverEstimateMin: 69, actualOverEstimateMax: 69 }), /one past fire.*69×/);
+    assert.match(validationSentence("FLOOD", { events: 0 }), /No flood with complete casualty figures/);
+    assert.match(validationSentence("FLOOD", null), /indicative only/);
+  });
+  test("the estimate carries its type's record from the validation file", () => {
+    const i = estimateImpact({ type: "EARTHQUAKE", severity: "HIGH", radiusKm: 10, ...PUNE });
+    assert.ok(i.assumptions.validation.events >= 1);
   });
 });

@@ -1,0 +1,213 @@
+{
+  "description": "Historical Indian disasters used to validate the casualty model (docs/PHASE-22-VALIDATION.md). Inputs (type, severity, radius) follow the fixed rules in 'rules', never the outcome. Observed figures are publicly reported, approximate, and rounded; sources are the linked articles and the reports they cite.",
+  "rules": {
+    "EARTHQUAKE": "severity and radius exactly as intake-service: magnitude >= 6.5 CRITICAL, >= 5.5 HIGH, >= 4.5 MEDIUM, else LOW; radius = 15 km x 2^(M-3), max 500 km; centred on the epicentre",
+    "FLOOD": "rain in 24 h: >= 204.5 mm CRITICAL, >= 115.6 HIGH, >= 64.5 MEDIUM (IMD bands, as intake-service); radius 25 km (intake-service weather radius)",
+    "CYCLONE": "IMD 'super' or 'extremely severe' cyclonic storm at landfall: CRITICAL; radius 100 km around the landfall point",
+    "INDUSTRIAL_ACCIDENT": "release over a city-wide area: CRITICAL; over a neighbourhood: HIGH; radius from the reported affected area (r = sqrt(area / pi))",
+    "LANDSLIDE": "slope failure burying a settlement: HIGH; radius 1 km",
+    "FIRE": "multi-storey building fire with mass casualties: HIGH; radius 0.5 km"
+  },
+  "indiaPopulationMillions": {
+    "1967": 525,
+    "1984": 760,
+    "1991": 880,
+    "1993": 915,
+    "1999": 1030,
+    "2001": 1060,
+    "2005": 1150,
+    "2014": 1310,
+    "2017": 1355,
+    "2019": 1385,
+    "2020": 1396,
+    "source": "World Bank, Population total (SP.POP.TOTL), India; rounded"
+  },
+  "events": [
+    {
+      "id": "koyna-1967",
+      "name": "Koynanagar earthquake",
+      "date": "1967-12-11",
+      "type": "EARTHQUAKE",
+      "magnitude": 6.6,
+      "latitude": 17.4,
+      "longitude": 73.75,
+      "observed": {
+        "deaths": 180,
+        "injured": 2272,
+        "injuriesReported": true
+      },
+      "source": "https://en.wikipedia.org/wiki/1967_Koynanagar_earthquake",
+      "population2020": 8000234
+    },
+    {
+      "id": "uttarkashi-1991",
+      "name": "Uttarkashi earthquake",
+      "date": "1991-10-20",
+      "type": "EARTHQUAKE",
+      "magnitude": 6.8,
+      "latitude": 30.78,
+      "longitude": 78.77,
+      "observed": {
+        "deaths": 768,
+        "injured": 5066,
+        "injuriesReported": true
+      },
+      "source": "https://en.wikipedia.org/wiki/1991_Uttarkashi_earthquake",
+      "population2020": 4098905
+    },
+    {
+      "id": "latur-1993",
+      "name": "Latur (Killari) earthquake",
+      "date": "1993-09-30",
+      "type": "EARTHQUAKE",
+      "magnitude": 6.2,
+      "latitude": 18.07,
+      "longitude": 76.58,
+      "observed": {
+        "deaths": 9748,
+        "injured": 30000,
+        "injuriesReported": true
+      },
+      "source": "https://en.wikipedia.org/wiki/1993_Latur_earthquake",
+      "population2020": 10794510
+    },
+    {
+      "id": "bhuj-2001",
+      "name": "Gujarat (Bhuj) earthquake",
+      "date": "2001-01-26",
+      "type": "EARTHQUAKE",
+      "magnitude": 7.7,
+      "latitude": 23.42,
+      "longitude": 70.23,
+      "observed": {
+        "deaths": 20000,
+        "injured": 167000,
+        "injuriesReported": true
+      },
+      "source": "https://en.wikipedia.org/wiki/2001_Gujarat_earthquake",
+      "population2020": 2787576
+    },
+    {
+      "id": "bhopal-1984",
+      "name": "Bhopal gas leak",
+      "date": "1984-12-03",
+      "type": "INDUSTRIAL_ACCIDENT",
+      "severity": "CRITICAL",
+      "radiusKm": 3.6,
+      "radiusBasis": "about 40 km2 of the city affected",
+      "latitude": 23.28,
+      "longitude": 77.41,
+      "observed": {
+        "deaths": 3787,
+        "injured": 558125,
+        "injuriesReported": true
+      },
+      "source": "https://en.wikipedia.org/wiki/Bhopal_disaster",
+      "population2020": 483557
+    },
+    {
+      "id": "vizag-2020",
+      "name": "Visakhapatnam gas leak (LG Polymers)",
+      "date": "2020-05-07",
+      "type": "INDUSTRIAL_ACCIDENT",
+      "severity": "HIGH",
+      "radiusKm": 3,
+      "radiusBasis": "villages within about 3 km of the plant evacuated",
+      "latitude": 17.76,
+      "longitude": 83.22,
+      "observed": {
+        "deaths": 12,
+        "injured": 585,
+        "injuriesReported": true
+      },
+      "source": "https://en.wikipedia.org/wiki/Visakhapatnam_gas_leak",
+      "population2020": 44774
+    },
+    {
+      "id": "kamala-mills-2017",
+      "name": "Kamala Mills fire, Mumbai",
+      "date": "2017-12-29",
+      "type": "FIRE",
+      "severity": "HIGH",
+      "radiusKm": 0.5,
+      "latitude": 19.0045,
+      "longitude": 72.8273,
+      "observed": {
+        "deaths": 14,
+        "injured": 55,
+        "injuriesReported": true
+      },
+      "source": "https://en.wikipedia.org/wiki/2017_Kamala_Mills_fire",
+      "population2020": 27278
+    },
+    {
+      "id": "malin-2014",
+      "name": "Malin landslide (Pune district)",
+      "date": "2014-07-30",
+      "type": "LANDSLIDE",
+      "severity": "HIGH",
+      "radiusKm": 1,
+      "latitude": 19.16,
+      "longitude": 73.69,
+      "observed": {
+        "deaths": 151,
+        "injured": 0,
+        "injuriesReported": false
+      },
+      "source": "https://en.wikipedia.org/wiki/2014_Malin_landslide",
+      "population2020": 507
+    },
+    {
+      "id": "mumbai-floods-2005",
+      "name": "Mumbai floods (944 mm in 24 h)",
+      "date": "2005-07-26",
+      "type": "FLOOD",
+      "severity": "CRITICAL",
+      "radiusKm": 25,
+      "latitude": 19.08,
+      "longitude": 72.88,
+      "observed": {
+        "deaths": 419,
+        "injured": 0,
+        "injuriesReported": false
+      },
+      "source": "https://en.wikipedia.org/wiki/2005_Maharashtra_floods",
+      "population2020": 18556384
+    },
+    {
+      "id": "odisha-cyclone-1999",
+      "name": "1999 Odisha super cyclone",
+      "date": "1999-10-29",
+      "type": "CYCLONE",
+      "severity": "CRITICAL",
+      "radiusKm": 100,
+      "latitude": 20.27,
+      "longitude": 86.4,
+      "observed": {
+        "deaths": 9887,
+        "injured": 0,
+        "injuriesReported": false
+      },
+      "source": "https://en.wikipedia.org/wiki/1999_Odisha_cyclone",
+      "population2020": 13581618
+    },
+    {
+      "id": "fani-2019",
+      "name": "Cyclone Fani (landfall near Puri)",
+      "date": "2019-05-03",
+      "type": "CYCLONE",
+      "severity": "CRITICAL",
+      "radiusKm": 100,
+      "latitude": 19.81,
+      "longitude": 85.83,
+      "observed": {
+        "deaths": 64,
+        "injured": 0,
+        "injuriesReported": false
+      },
+      "source": "https://en.wikipedia.org/wiki/Cyclone_Fani",
+      "population2020": 10709774
+    }
+  ],
+  "populationMethod": "WorldPop 2020 1 km grid for India (CC BY 4.0), counted with services/response-service/src/impact.js populationWithin() inside each event's radius"
+}

@@ -57,6 +57,8 @@ numbers only.
 | `GET /api/v1/hospitals/forecast?horizonHours=24` | every hospital, highest risk first: current %, predicted %, trend per hour, hours to 90 %, risk, for beds and ICU |
 | `GET /api/v1/hospitals/{id}/forecast?horizonHours=24` | the same plus the hourly `history[]` and `forecast[]` (`{at, pct, low, high}`) |
 
+> **Phase 22:** the settings above were re-tuned on real hospital occupancy (α 0.7, β 0.05, φ 0.5, band z 0.38); the originals extended short-term swings as trends and were 3× worse than "no change" on unseen data. See [PHASE-22-VALIDATION.md](PHASE-22-VALIDATION.md) §3.
+
 ## 3. Transformer-risk forecast (power-service)
 
 **Input:** a transformer's readings from the last 7 days (newest 500), its

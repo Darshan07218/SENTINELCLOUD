@@ -1,0 +1,179 @@
+{
+  "generatedBy": "tools/validation/backtest-occupancy.mjs",
+  "data": "healthdata.gov g62h-syeh (HHS, public domain), daily inpatient beds used / beds, MA, CA, TX, NY, FL, IL, 2021-01-01..2023-12-31",
+  "settings": {
+    "windowHours": 168,
+    "minHourlyPoints": 6,
+    "alpha": 0.7,
+    "beta": 0.05,
+    "phi": 0.5,
+    "thresholdPct": 90,
+    "bandZ": 0.38,
+    "window": 168,
+    "originEvery": 7,
+    "step": "1 day"
+  },
+  "overall": {
+    "h1": {
+      "maeHolt": 0.61,
+      "maePersistence": 0.6,
+      "skillVsPersistence": -0.02,
+      "bandCoverage": 0.66,
+      "origins": 786
+    },
+    "h7": {
+      "maeHolt": 1.01,
+      "maePersistence": 1.04,
+      "skillVsPersistence": 0.02,
+      "bandCoverage": 0.85,
+      "origins": 786
+    },
+    "h14": {
+      "maeHolt": 1.21,
+      "maePersistence": 1.23,
+      "skillVsPersistence": 0.02,
+      "bandCoverage": 0.88,
+      "origins": 786
+    }
+  },
+  "perState": {
+    "MA": {
+      "days": 1095,
+      "from": "2021-01-01",
+      "to": "2023-12-31",
+      "h1": {
+        "maeHolt": 0.41,
+        "maePersistence": 0.4,
+        "bandCoverage": 0.76,
+        "origins": 131
+      },
+      "h7": {
+        "maeHolt": 0.84,
+        "maePersistence": 0.85,
+        "bandCoverage": 0.87,
+        "origins": 131
+      },
+      "h14": {
+        "maeHolt": 0.93,
+        "maePersistence": 0.96,
+        "bandCoverage": 0.92,
+        "origins": 131
+      }
+    },
+    "CA": {
+      "days": 1095,
+      "from": "2021-01-01",
+      "to": "2023-12-31",
+      "h1": {
+        "maeHolt": 0.39,
+        "maePersistence": 0.4,
+        "bandCoverage": 0.81,
+        "origins": 131
+      },
+      "h7": {
+        "maeHolt": 0.72,
+        "maePersistence": 0.72,
+        "bandCoverage": 0.87,
+        "origins": 131
+      },
+      "h14": {
+        "maeHolt": 0.92,
+        "maePersistence": 0.91,
+        "bandCoverage": 0.88,
+        "origins": 131
+      }
+    },
+    "TX": {
+      "days": 1095,
+      "from": "2021-01-01",
+      "to": "2023-12-31",
+      "h1": {
+        "maeHolt": 0.64,
+        "maePersistence": 0.64,
+        "bandCoverage": 0.61,
+        "origins": 131
+      },
+      "h7": {
+        "maeHolt": 1.12,
+        "maePersistence": 1.17,
+        "bandCoverage": 0.75,
+        "origins": 131
+      },
+      "h14": {
+        "maeHolt": 1.29,
+        "maePersistence": 1.31,
+        "bandCoverage": 0.82,
+        "origins": 131
+      }
+    },
+    "NY": {
+      "days": 1095,
+      "from": "2021-01-01",
+      "to": "2023-12-31",
+      "h1": {
+        "maeHolt": 0.74,
+        "maePersistence": 0.73,
+        "bandCoverage": 0.49,
+        "origins": 131
+      },
+      "h7": {
+        "maeHolt": 0.98,
+        "maePersistence": 0.99,
+        "bandCoverage": 0.86,
+        "origins": 131
+      },
+      "h14": {
+        "maeHolt": 1.24,
+        "maePersistence": 1.27,
+        "bandCoverage": 0.87,
+        "origins": 131
+      }
+    },
+    "FL": {
+      "days": 1095,
+      "from": "2021-01-01",
+      "to": "2023-12-31",
+      "h1": {
+        "maeHolt": 0.77,
+        "maePersistence": 0.72,
+        "bandCoverage": 0.56,
+        "origins": 131
+      },
+      "h7": {
+        "maeHolt": 1.26,
+        "maePersistence": 1.29,
+        "bandCoverage": 0.86,
+        "origins": 131
+      },
+      "h14": {
+        "maeHolt": 1.49,
+        "maePersistence": 1.52,
+        "bandCoverage": 0.88,
+        "origins": 131
+      }
+    },
+    "IL": {
+      "days": 1095,
+      "from": "2021-01-01",
+      "to": "2023-12-31",
+      "h1": {
+        "maeHolt": 0.69,
+        "maePersistence": 0.68,
+        "bandCoverage": 0.74,
+        "origins": 131
+      },
+      "h7": {
+        "maeHolt": 1.16,
+        "maePersistence": 1.2,
+        "bandCoverage": 0.89,
+        "origins": 131
+      },
+      "h14": {
+        "maeHolt": 1.37,
+        "maePersistence": 1.39,
+        "bandCoverage": 0.92,
+        "origins": 131
+      }
+    }
+  }
+}

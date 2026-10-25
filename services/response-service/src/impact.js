@@ -6,12 +6,62 @@
  * casualties to expect, and what that means in hospital beds, ICU beds,
  * ambulance trips and blood. The playbook turns those numbers into actions.
  *
- * DEMO MODEL, not an emergency-management tool: the population figures are
- * approximate Census 2011 densities for Pune, and the rates are round
- * illustrative values chosen so the four severities and six types differ in
- * plausible ways. Every number is in this file so it can be read and argued
- * with.
+ * DEMO MODEL, not an emergency-management tool: the casualty rates are round
+ * illustrative values (validated against past Indian disasters in
+ * docs/PHASE-22-VALIDATION.md). Every number is in this file so it can be
+ * read and argued with.
+ *
+ * Phase 21: people per km² come from the REAL WorldPop 2020 1 km grid for
+ * about ±110 km around Pune (src/data/pune-population-worldpop-2020-1km.json;
+ * WorldPop, CC BY 4.0). Outside that grid the zone model below (approximate
+ * Census 2011 densities) is the fallback.
  */
+import { readFileSync } from "node:fs";
+
+/** A WorldPop grid: { north, west, cellDeg, rows, cols, values[] } (people per cell). */
+export function loadPopulationGrid(url = new URL("./data/pune-population-worldpop-2020-1km.json", import.meta.url)) {
+  try {
+    const g = JSON.parse(readFileSync(url, "utf8"));
+    if (!Array.isArray(g.values) || g.values.length !== g.rows * g.cols) return null;
+    return g;
+  } catch {
+    return null; // no grid: the zone model alone
+  }
+}
+
+export const POPULATION_GRID = loadPopulationGrid();
+
+/**
+ * Phase 22: the model's record against historical Indian disasters
+ * (src/data/casualty-validation.json, written by
+ * tools/validation/validate-casualty-model.mjs). Every plan quotes it, so an
+ * operator reads the estimate for what it is: a lower bound for severe
+ * sudden events.
+ */
+export function loadValidationRecord(url = new URL("./data/casualty-validation.json", import.meta.url)) {
+  try {
+    return JSON.parse(readFileSync(url, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+export const VALIDATION_RECORD = loadValidationRecord();
+
+/** The record for one disaster type: { events, actualOverEstimateMin, actualOverEstimateMax } or { events: 0 }. */
+export function validationFor(type, record = VALIDATION_RECORD) {
+  return record?.byType?.[type] || { events: 0 };
+}
+
+/** People per km² at a point from the grid, or null outside it. */
+export function gridDensityAt(latitude, longitude, grid = POPULATION_GRID) {
+  if (!grid) return null;
+  const row = Math.floor((grid.north - latitude) / grid.cellDeg);
+  const col = Math.floor((longitude - grid.west) / grid.cellDeg);
+  if (row < 0 || col < 0 || row >= grid.rows || col >= grid.cols) return null;
+  const cellKm2 = (grid.cellDeg * 111.32) ** 2 * Math.cos((latitude * Math.PI) / 180);
+  return grid.values[row * grid.cols + col] / cellKm2;
+}
 
 /**
  * Population density zones, most specific first; a point takes the first
@@ -74,7 +124,10 @@ function distanceKm(lat1, lng1, lat2, lng2) {
   return 6371 * 2 * Math.atan2(Math.sqrt(Math.min(1, a)), Math.sqrt(Math.max(0, 1 - a)));
 }
 
-export function densityAt(latitude, longitude, zones = POPULATION_ZONES) {
+/** People per km²: the WorldPop grid where it covers the point, else the zone model. */
+export function densityAt(latitude, longitude, zones = POPULATION_ZONES, grid = POPULATION_GRID) {
+  const fromGrid = gridDensityAt(latitude, longitude, grid);
+  if (fromGrid !== null) return fromGrid;
   for (const z of zones) if (distanceKm(latitude, longitude, z.latitude, z.longitude) <= z.radiusKm) return z.density;
   return RURAL_DENSITY;
 }
@@ -83,7 +136,7 @@ export function densityAt(latitude, longitude, zones = POPULATION_ZONES) {
  * People living within radiusKm of the point: the density model summed over
  * a grid of cells (about 30 across the circle, 0.25–2 km each).
  */
-export function populationWithin(latitude, longitude, radiusKm, zones = POPULATION_ZONES) {
+export function populationWithin(latitude, longitude, radiusKm, zones = POPULATION_ZONES, grid = POPULATION_GRID) {
   const r = Math.min(Math.max(radiusKm, 0.1), 100);
   const step = Math.min(2, Math.max(0.25, r / 30));
   const kmPerDegLng = KM_PER_DEG_LAT * Math.cos((latitude * Math.PI) / 180);
@@ -91,7 +144,7 @@ export function populationWithin(latitude, longitude, radiusKm, zones = POPULATI
   for (let dy = -r + step / 2; dy < r; dy += step) {
     for (let dx = -r + step / 2; dx < r; dx += step) {
       if (dx * dx + dy * dy > r * r) continue;
-      people += densityAt(latitude + dy / KM_PER_DEG_LAT, longitude + dx / kmPerDegLng, zones) * step * step;
+      people += densityAt(latitude + dy / KM_PER_DEG_LAT, longitude + dx / kmPerDegLng, zones, grid) * step * step;
     }
   }
   return Math.round(people);
@@ -101,12 +154,20 @@ export function populationWithin(latitude, longitude, radiusKm, zones = POPULATI
  * The impact estimate the playbook plans with.
  * disaster: { type, severity, latitude, longitude, radiusKm }
  */
-export function estimateImpact({ type, severity, latitude, longitude, radiusKm }) {
-  const population = populationWithin(latitude, longitude, radiusKm);
+/**
+ * The population → casualties step on its own (Phase 22: the validation
+ * against historical disasters feeds it each event's population directly).
+ */
+export function casualtiesFor({ type, severity, population }) {
   const exposure = EXPOSURE[type] ?? 0.1;
   const exposed = Math.round(population * exposure);
   const rate = (CASUALTIES_PER_10K[type] ?? 10) * (SEVERITY_MULTIPLIER[severity] ?? 1);
-  const casualties = Math.round((exposed * rate) / 10000);
+  return { exposure, exposed, rate, casualties: Math.round((exposed * rate) / 10000) };
+}
+
+export function estimateImpact({ type, severity, latitude, longitude, radiusKm }, { grid = POPULATION_GRID } = {}) {
+  const population = populationWithin(latitude, longitude, radiusKm, POPULATION_ZONES, grid);
+  const { exposure, exposed, rate, casualties } = casualtiesFor({ type, severity, population });
   const hospitalBeds = Math.ceil(casualties * SHARES.hospitalised);
   const icuBeds = Math.ceil(casualties * SHARES.icu);
   const transport = Math.ceil(casualties * SHARES.transport);
@@ -124,7 +185,11 @@ export function estimateImpact({ type, severity, latitude, longitude, radiusKm }
       casualtiesPer10kExposed: rate,
       shares: SHARES,
       tripsPerAmbulance: TRIPS_PER_AMBULANCE,
-      model: "Approximate Census 2011 densities for Pune; illustrative casualty rates (demo model).",
+      model: grid
+        ? "Population: WorldPop 2020 1 km grid (CC BY 4.0); illustrative casualty rates (demo model)."
+        : "Population: approximate Census 2011 density zones for Pune; illustrative casualty rates (demo model).",
+      populationSource: grid ? "worldpop-2020-1km" : "census-2011-zones",
+      validation: validationFor(type),
     },
   };
 }

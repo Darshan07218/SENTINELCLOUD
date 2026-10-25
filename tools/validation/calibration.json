@@ -1,0 +1,68 @@
+{
+  "generatedBy": "tools/validation/calibrate.mjs",
+  "method": "per-type geometric-mean factor, leave-one-out",
+  "report": [
+    {
+      "type": "EARTHQUAKE",
+      "events": 4,
+      "inSampleFactor": 10.2,
+      "leaveOneOut": [
+        {
+          "id": "koyna-1967",
+          "factorFromOthers": 21.5,
+          "uncorrectedAbsLog10": 0.04,
+          "correctedAbsLog10": 1.3
+        },
+        {
+          "id": "uttarkashi-1991",
+          "factorFromOthers": 15.3,
+          "uncorrectedAbsLog10": 0.48,
+          "correctedAbsLog10": 0.71
+        },
+        {
+          "id": "latur-1993",
+          "factorFromOthers": 7.3,
+          "uncorrectedAbsLog10": 1.45,
+          "correctedAbsLog10": 0.59
+        },
+        {
+          "id": "bhuj-2001",
+          "factorFromOthers": 4.5,
+          "uncorrectedAbsLog10": 2.07,
+          "correctedAbsLog10": 1.42
+        }
+      ],
+      "meanAbsLog10Uncorrected": 1.01,
+      "meanAbsLog10LeaveOneOut": 1,
+      "verdict": "no meaningful gain on unseen events"
+    },
+    {
+      "type": "INDUSTRIAL_ACCIDENT",
+      "events": 2,
+      "inSampleFactor": 550.7,
+      "leaveOneOut": [
+        {
+          "id": "bhopal-1984",
+          "factorFromOthers": 85.3,
+          "uncorrectedAbsLog10": 3.55,
+          "correctedAbsLog10": 1.62
+        },
+        {
+          "id": "vizag-2020",
+          "factorFromOthers": 3556.4,
+          "uncorrectedAbsLog10": 1.93,
+          "correctedAbsLog10": 1.62
+        }
+      ],
+      "meanAbsLog10Uncorrected": 2.74,
+      "meanAbsLog10LeaveOneOut": 1.62,
+      "verdict": "correction helps on unseen events"
+    },
+    {
+      "type": "FIRE",
+      "events": 1,
+      "inSampleFactor": 69,
+      "verdict": "one event: a factor would only fit that event, not validate"
+    }
+  ]
+}
