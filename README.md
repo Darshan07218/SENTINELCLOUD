@@ -284,6 +284,19 @@ inject a labelled DEMO detection to show it live. Settings:
 `INTAKE_SOURCES`, `WATCH_*`. Details:
 [`docs/PHASE-19-AUTO-DETECTION.md`](docs/PHASE-19-AUTO-DETECTION.md).
 
+## Smarter response (Phase 20)
+
+Response plans are now sized from **who lives in the zone**: a population-density
+model of Pune (approximate Census 2011 figures) gives the people within the
+disaster's radius, and per-type exposure and casualty rates turn that into the
+beds, ICU beds, ambulances and blood needed (the Phase 15 severity table stays
+the minimum). Approving a plan now **holds hospital beds** (taken off the free
+count at once, so two disasters can't count on the same beds; undo gives them
+back), spread over hospitals that aren't about to fill up per the **Phase 18
+forecast**, never more than 80 % of a hospital's free beds. Transformers the
+risk forecast flags are reported even before they fail. Details:
+[`docs/PHASE-20-SMARTER-RESPONSE.md`](docs/PHASE-20-SMARTER-RESPONSE.md).
+
 ## Stopping the stack
 
 ```bash

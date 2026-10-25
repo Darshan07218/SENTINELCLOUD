@@ -18,6 +18,9 @@ import { createHospitalRepository } from "./repositories/hospitalRepository.js";
 import { createHospitalService } from "./services/hospitalService.js";
 import { createHospitalRouter } from "./routes/hospitalRoutes.js";
 import { registerDisasterConsumer } from "./consumers/disasterConsumer.js";
+import { createCommandProcessor } from "./commands.js";
+import { createHospitalCommandHandlers, registerCommandConsumer } from "./consumers/commandConsumer.js";
+import { createReservationService } from "./services/reservations.js";
 import { createChaos } from "./chaos.js";
 import { metricsMiddleware, metricsHandler, registerDependencyCheck } from "./metrics.js";
 
@@ -177,7 +180,10 @@ async function start() {
     transaction,
   });
 
-  app.use("/", createHospitalRouter({ hospitalService, hospitalRepository }));
+  // Phase 20: bed reservations (response plans hold beds; undo gives them back).
+  const reservationService = createReservationService({ transaction: (fn) => withTransaction(pool, fn), pool, outbox });
+
+  app.use("/", createHospitalRouter({ hospitalService, hospitalRepository, reservationService }));
 
   app.use((req, res) => {
     res.status(404).json({ error: { code: "NOT_FOUND", message: `No route for ${req.method} ${req.originalUrl}` } });
@@ -215,7 +221,18 @@ async function start() {
   // disaster-reaction consumer (see consumers/disasterConsumer.js) —
   // "checks nearby hospitals, reports available capacity" in response
   // to disaster.detected/disaster.updated.
-  await connectBrokerWithRetry(registerDisasterConsumer({ consumeQueue, assertQueueAndBind, hospitalService, publishEvent }));
+  // Phase 20: response-service's bed commands, executed once each (commands.js).
+  const startDisasterConsumer = registerDisasterConsumer({ consumeQueue, assertQueueAndBind, hospitalService, publishEvent });
+  const startCommandConsumer = registerCommandConsumer({
+    consumeQueue,
+    assertQueueAndBind,
+    processCommand: createCommandProcessor({ pool, outbox }),
+    handlers: createHospitalCommandHandlers({ reservationService }),
+  });
+  await connectBrokerWithRetry(async () => {
+    await startDisasterConsumer();
+    await startCommandConsumer();
+  });
 }
 
 start().catch((err) => {

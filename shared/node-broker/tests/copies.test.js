@@ -11,7 +11,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../.
 const COPIES = {
   "broker.js": ["hospital-service", "ambulance-service", "disaster-service", "notification-service", "response-service"],
   "outbox.js": ["hospital-service", "ambulance-service", "disaster-service", "response-service"],
-  "commands.js": ["ambulance-service", "disaster-service"],
+  "commands.js": ["ambulance-service", "disaster-service", "hospital-service"],
 };
 
 for (const [file, services] of Object.entries(COPIES)) {

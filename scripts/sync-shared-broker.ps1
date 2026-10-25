@@ -20,7 +20,7 @@ foreach ($svc in "hospital-service", "ambulance-service", "disaster-service", "r
   Write-Host "synced outbox.js -> services/$svc/src/"
 }
 # commands.js (Phase 15): the services that execute response-service's commands.
-foreach ($svc in "ambulance-service", "disaster-service") {
+foreach ($svc in "ambulance-service", "disaster-service", "hospital-service") {
   Copy-Item shared/node-broker/commands.js "services/$svc/src/commands.js" -Force
   Write-Host "synced commands.js -> services/$svc/src/"
 }

@@ -213,12 +213,41 @@ export function createResponseRepository(db) {
     },
 
     /** The action a command (or undo command) reply belongs to, locked. */
+    /**
+     * Locks the action's PLAN row, then the action. Replies for the same plan
+     * arrive nearly together (prefetch > 1) and each checks "is anything still
+     * pending?" before closing the plan; without serialising them on the plan,
+     * two transactions could each see the other's action still PENDING and
+     * neither would close it (found in Phase 20: a plan stuck in EXECUTING).
+     * Plan before action is the order approve and undo use too, so no deadlock.
+     */
     async findActionByCommandForUpdate(commandId) {
+      const { rows: found } = await db.query(
+        `SELECT plan_id FROM response_actions WHERE command_id = $1 OR undo_command_id = $1`,
+        [commandId]
+      );
+      if (!found[0]) return null;
+      await db.query(`SELECT id FROM response_plans WHERE id = $1 FOR UPDATE`, [found[0].plan_id]);
       const { rows } = await db.query(
         `SELECT * FROM response_actions WHERE command_id = $1 OR undo_command_id = $1 FOR UPDATE`,
         [commandId]
       );
       return rows[0] ? mapAction(rows[0]) : null;
+    },
+
+    /** Safety net: plans whose actions have all finished but that were never closed. */
+    async findUnsettledPlans() {
+      const { rows } = await db.query(
+        `SELECT p.id FROM response_plans p
+          WHERE (p.status = 'EXECUTING' AND NOT EXISTS (SELECT 1 FROM response_actions a WHERE a.plan_id = p.id AND a.status = 'PENDING'))
+             OR (p.status = 'UNDOING'   AND NOT EXISTS (SELECT 1 FROM response_actions a WHERE a.plan_id = p.id AND a.status = 'UNDOING'))
+          LIMIT 50`
+      );
+      return rows.map((r) => r.id);
+    },
+
+    async lockPlan(planId) {
+      await db.query(`SELECT id FROM response_plans WHERE id = $1 FOR UPDATE`, [planId]);
     },
 
     async finishAction(actionId, status, { result = null, error = null } = {}) {

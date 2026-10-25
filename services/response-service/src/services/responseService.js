@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { buildPlan, ACTION_KINDS } from "../playbook.js";
+import { estimateImpact } from "../impact.js";
 import { registry } from "../metrics.js";
 
 /**
@@ -28,7 +29,7 @@ const REACTION_SOURCES = new Set(["hospital-service", "ambulance-service", "bloo
 /** Planning waits for these; power only adds a notice. */
 const REQUIRED_FOR_PLANNING = ["hospital", "ambulance", "blood"];
 
-export const COMMAND_EXECUTORS = new Set(["ambulance-service", "blood-bank-service", "disaster-service"]);
+export const COMMAND_EXECUTORS = new Set(["ambulance-service", "blood-bank-service", "disaster-service", "hospital-service"]);
 export const PLAN_EVENTS = Object.freeze({
   PROPOSED: "response.plan.proposed",
   APPROVED: "response.plan.approved",
@@ -80,13 +81,19 @@ export function currentReactions(context) {
 
 /** What earlier plans for this disaster already achieved (input to a revision-2 plan). */
 export function deliveredBy(plan) {
-  const delivered = { ambulances: 0, bloodUnits: {}, failedBloodBanks: {} };
+  const delivered = { ambulances: 0, bloodUnits: {}, failedBloodBanks: {}, beds: 0, icuBeds: 0, failedHospitals: [] };
   for (const a of plan?.actions || []) {
     if (a.kind === ACTION_KINDS.BLOOD_RESERVE && a.status === "FAILED") {
       // Don't ask the same bank for the same type again in the follow-up.
       (delivered.failedBloodBanks[a.params.bloodType] ||= []).push(a.params.bloodBankId);
     }
+    if (a.kind === ACTION_KINDS.BEDS_RESERVE && a.status === "FAILED") delivered.failedHospitals.push(a.params.hospitalId);
     if (a.status !== "SUCCEEDED") continue;
+    if (a.kind === ACTION_KINDS.BEDS_RESERVE) {
+      // What the hospital actually held (it may hold fewer than asked if beds filled meanwhile).
+      delivered.beds += a.result?.reservedBeds ?? 0;
+      delivered.icuBeds += a.result?.reservedIcuBeds ?? 0;
+    }
     if (a.kind === ACTION_KINDS.AMBULANCE_DISPATCH) delivered.ambulances += a.result?.dispatchedCount ?? 0;
     if (a.kind === ACTION_KINDS.BLOOD_RESERVE) {
       delivered.bloodUnits[a.params.bloodType] = (delivered.bloodUnits[a.params.bloodType] || 0) + a.params.units;
@@ -110,6 +117,11 @@ export function commandFor(action, plan, requestedBy) {
         routingKey: "command.blood.reserve",
         payload: { ...base, bloodBankId: action.params.bloodBankId, bloodType: action.params.bloodType, units: action.params.units, hospitalId: action.params.hospitalId, requestedBy, notes: `Response plan for ${d.severity} ${d.type} (disaster ${d.id})` },
       };
+    case ACTION_KINDS.BEDS_RESERVE:
+      return {
+        routingKey: "command.hospital.reserve-beds",
+        payload: { ...base, disasterId: d.id, hospitalId: action.params.hospitalId, beds: action.params.beds, icuBeds: action.params.icuBeds, requestedBy, notes: `Response plan for ${d.severity} ${d.type} (disaster ${d.id})` },
+      };
     case ACTION_KINDS.WIDEN_RADIUS:
       return { routingKey: "command.disaster.widen-radius", payload: { ...base, disasterId: d.id, radiusKm: action.params.radiusKm } };
     default:
@@ -126,6 +138,9 @@ export function undoCommandFor(action, plan) {
   if (action.kind === ACTION_KINDS.BLOOD_RESERVE && action.result?.reservationId) {
     return { routingKey: "command.blood.release", payload: { ...base, reservationId: action.result.reservationId } };
   }
+  if (action.kind === ACTION_KINDS.BEDS_RESERVE && action.result?.reservationId) {
+    return { routingKey: "command.hospital.release-beds", payload: { ...base, reservationId: action.result.reservationId } };
+  }
   return null; // widening a search isn't reversed: nothing was taken from anyone
 }
 
@@ -136,7 +151,11 @@ export function undoCommandFor(action, plan) {
  * @param outbox       createOutbox(...)
  * @param autoApprove  RESPONSE_AUTO_APPROVE: execute plans without waiting for an operator
  */
-export function createResponseService({ transaction, repository, outbox, autoApprove = false, log = console }) {
+/**
+ * @param estimate     Phase 20: (disaster) => impact estimate (impact.js); null plans
+ *                     from the severity table alone, as in Phase 15
+ */
+export function createResponseService({ transaction, repository, outbox, autoApprove = false, log = console, estimate = estimateImpact }) {
   async function emitPlanEvent(client, plan, status) {
     const executable = plan.actions.filter((a) => a.kind !== ACTION_KINDS.NOTICE).length;
     await outbox.enqueue(
@@ -247,7 +266,9 @@ export function createResponseService({ transaction, repository, outbox, autoApp
 
     const d = context.disaster;
     const disaster = { id: disasterId, type: d.type, severity: d.severity, latitude: d.latitude, longitude: d.longitude, radiusKm: context.radiusKm, description: d.description };
-    const { needs, actions } = buildPlan({ disaster, reactions, revision, delivered });
+    // Phase 20: how many people the zone holds and what that means in casualties and beds.
+    const impact = estimate ? estimate(disaster) : null;
+    const { needs, actions } = buildPlan({ disaster, reactions, revision, delivered, impact });
     const executable = actions.some((a) => a.kind !== ACTION_KINDS.NOTICE);
 
     const plan = await transaction(async ({ repo, client }) => {
@@ -257,7 +278,10 @@ export function createResponseService({ transaction, repository, outbox, autoApp
         // Nothing to execute (e.g. enough already sent): recorded as done.
         status: executable ? "PROPOSED" : "COMPLETED",
         mode: autoApprove ? "AUTO" : "APPROVAL",
-        needs,
+        // The estimate travels with the plan, so the page can show what it was based on.
+        needs: impact
+          ? { ...needs, impact: { population: impact.population, exposed: impact.exposed, casualties: impact.casualties, hospitalBeds: impact.hospitalBeds, icuBeds: impact.icuBeds, transport: impact.transport } }
+          : needs,
         disaster,
         actions,
       });
@@ -347,6 +371,16 @@ export function createResponseService({ transaction, repository, outbox, autoApp
     try {
       for (const id of await repository.findUnplannedOlderThan(PLAN_WAIT_SECONDS)) await maybePlan(id, { force: true });
       for (const id of await repository.findEscalatedWithoutFollowUp(PLAN_WAIT_SECONDS)) await maybePlan(id, { force: true });
+      // Safety net: close any plan whose actions have all finished.
+      for (const id of await repository.findUnsettledPlans()) {
+        await transaction(async ({ repo, client }) => {
+          await repo.lockPlan(id);
+          await settlePlan(repo, client, id);
+        });
+        outbox.kick();
+        const settled = await repository.getPlan(id);
+        if (settled && ["COMPLETED", "PARTIAL"].includes(settled.status)) await maybePlan(settled.disasterId);
+      }
       for (const stale of await repository.findTimedOutActions(COMMAND_TIMEOUT_SECONDS)) {
         await transaction(async ({ repo, client }) => {
           const action = await repo.findActionByCommandForUpdate(stale.undoCommandId || stale.commandId);

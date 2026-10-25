@@ -35,7 +35,14 @@ export const REACTION_ROUTING_KEYS = Object.freeze([
   ROUTING_KEYS.POWER_INFRASTRUCTURE_AT_RISK,
 ]);
 
+/** Phase 20: bed commands from response-service (docs/PHASE-20-SMARTER-RESPONSE.md §2). */
+export const COMMANDS = Object.freeze({
+  HOSPITAL_RESERVE_BEDS: "command.hospital.reserve-beds",
+  HOSPITAL_RELEASE_BEDS: "command.hospital.release-beds",
+});
+
 export const QUEUES = Object.freeze({
+  HOSPITAL_COMMANDS: "q.hospital.commands",
   HOSPITAL_DISASTER_EVENTS: "q.hospital.disaster-events",
   AMBULANCE_DISASTER_EVENTS: "q.ambulance.disaster-events",
   BLOODBANK_DISASTER_EVENTS: "q.bloodbank.disaster-events",

@@ -29,9 +29,12 @@ describe("deliveredBy", () => {
         { kind: "ambulance.dispatch", status: "FAILED", result: null },
         { kind: "blood.reserve", status: "SUCCEEDED", params: { bloodType: "O-", units: 4 } },
         { kind: "blood.reserve", status: "FAILED", params: { bloodType: "O+", units: 4, bloodBankId: "b1" } },
+        // Phase 20: beds count what the hospital actually held, not what was asked.
+        { kind: "hospital.reserve_beds", status: "SUCCEEDED", params: { hospitalId: "h1", beds: 30, icuBeds: 5 }, result: { reservedBeds: 24, reservedIcuBeds: 5 } },
+        { kind: "hospital.reserve_beds", status: "FAILED", params: { hospitalId: "h2", beds: 10, icuBeds: 0 } },
       ],
     });
-    assert.deepEqual(delivered, { ambulances: 2, bloodUnits: { "O-": 4 }, failedBloodBanks: { "O+": ["b1"] } });
+    assert.deepEqual(delivered, { ambulances: 2, bloodUnits: { "O-": 4 }, failedBloodBanks: { "O+": ["b1"] }, beds: 24, icuBeds: 5, failedHospitals: ["h2"] });
   });
 });
 
@@ -52,6 +55,11 @@ describe("commandFor", () => {
     const w = commandFor({ kind: "disaster.widen_radius", params: { radiusKm: 30 } }, plan, SYSTEM_USER_ID);
     assert.deepEqual([w.routingKey, w.payload.disasterId, w.payload.radiusKm], ["command.disaster.widen-radius", D.id, 30]);
   });
+  test("bed reservation (Phase 20) names the hospital, the beds and the disaster", () => {
+    const c = commandFor({ kind: "hospital.reserve_beds", params: { hospitalId: "h", beds: 12, icuBeds: 3 } }, plan, SYSTEM_USER_ID);
+    assert.equal(c.routingKey, "command.hospital.reserve-beds");
+    assert.deepEqual([c.payload.hospitalId, c.payload.beds, c.payload.icuBeds, c.payload.disasterId, c.payload.planId], ["h", 12, 3, D.id, plan.id]);
+  });
   test("a notice has no command; every command gets a fresh id", () => {
     assert.equal(commandFor({ kind: "notice", params: {} }, plan, SYSTEM_USER_ID), null);
     const a = commandFor({ kind: "ambulance.dispatch", params: { count: 1 } }, plan, SYSTEM_USER_ID);
@@ -66,6 +74,8 @@ describe("undoCommandFor", () => {
     assert.deepEqual([sd.routingKey, sd.payload.emergencyIds], ["command.ambulance.stand-down", ["e1", "e2"]]);
     const rel = undoCommandFor({ kind: "blood.reserve", result: { reservationId: "r1" } }, plan);
     assert.deepEqual([rel.routingKey, rel.payload.reservationId], ["command.blood.release", "r1"]);
+    const beds = undoCommandFor({ kind: "hospital.reserve_beds", result: { reservationId: "hr1" } }, plan);
+    assert.deepEqual([beds.routingKey, beds.payload.reservationId], ["command.hospital.release-beds", "hr1"]);
     assert.equal(undoCommandFor({ kind: "disaster.widen_radius", result: {} }, plan), null);
     assert.equal(undoCommandFor({ kind: "ambulance.dispatch", result: { emergencyIds: [] } }, plan), null, "nothing was created");
   });

@@ -17,7 +17,7 @@
 #                    inside containers; needs network for npm/Maven).
 #   --skip-db-suite  skip tests/db/realPostgres.test.js (throwaway Postgres).
 #
-# The 14 checks (each prints PASS/FAIL with the evidence):
+# The 15 checks (each prints PASS/FAIL with the evidence):
 #    1 Docker Compose startup        8 Disaster event flow (fan-out + fan-in)
 #    2 Database initialisation       9 Message broker
 #    3 Authentication                10 Dashboard (frontend + live WebSocket)
@@ -25,6 +25,7 @@
 #    5 Ambulance service             12 Monitoring (Prometheus/Alertmanager/Grafana)
 #    6 Blood service                 13 Failure simulation
 #    7 Power service                 14 Automatic detection (Phase 19)
+#                                    15 Smarter response (Phase 20)
 # In `compose` mode check 11 is reported as SKIP; in `k8s` mode check 1 is.
 #
 # Requirements: bash 4+, Docker with Compose v2, curl, Node.js 20+ (22+ for
@@ -376,13 +377,63 @@ api_checks() { # label envfile
   dtid=$(printf '%s' "$HTTP_BODY" | js 'd.detection&&d.detection.id')
   http POST "/intake/detections/$dtid/dismiss" '{"note":"verify-system"}'
   [[ $HTTP_CODE == 200 && $(printf '%s' "$HTTP_BODY" | js 'd.detection.status+":"+(d.detection.disasterId||"none")') == DISMISSED:none ]] || { ok=0; why+=("dismiss → $HTTP_CODE"); }
-  # Close the disasters this check created.
+  ((ok)) && record "14 Automatic detection" PASS "$label: HIGH detection confirmed → disaster created via the gateway (second confirm 409), CRITICAL auto-confirmed, LOW dismissed" \
+         || record "14 Automatic detection" FAIL "$label: ${why[*]}"
+
+  # ---- 15 Smarter response (Phase 20) ------------------------------------
+  # The HIGH disaster confirmed above: its plan carries an impact estimate and
+  # bed reservations; approving holds the beds, undoing gives them back.
+  step "[$label] 15 Smarter response"
+  ok=1 why=()
+  local pid="" pstatus="" held released
+  if [[ ${#created[@]} -ge 1 ]]; then
+    local deadline=$((SECONDS + 60))
+    while ((SECONDS < deadline)); do
+      http GET "/response/plans?disasterId=${created[0]}"
+      pid=$(printf '%s' "$HTTP_BODY" | js '(d.plans||[]).find(p=>p.revision===1)?.id||""')
+      [[ -n "$pid" ]] && break
+      sleep 3
+    done
+    if [[ -z "$pid" ]]; then
+      ok=0; why+=("no plan for the confirmed disaster within 60 s")
+    else
+      http GET "/response/plans/$pid"
+      [[ $(printf '%s' "$HTTP_BODY" | js 'd.plan.needs.impact.casualties>0&&d.plan.actions.some(a=>a.kind==="hospital.reserve_beds")') == true ]] || { ok=0; why+=("plan has no impact estimate or bed reservation"); }
+      http POST "/response/plans/$pid/approve" '{"note":"verify-system"}'
+      [[ $HTTP_CODE == 200 ]] || { ok=0; why+=("approve → $HTTP_CODE"); }
+      deadline=$((SECONDS + 90))
+      while ((SECONDS < deadline)); do
+        http GET "/response/plans/$pid"
+        pstatus=$(printf '%s' "$HTTP_BODY" | js 'd.plan.status')
+        [[ $pstatus == COMPLETED || $pstatus == PARTIAL ]] && break
+        sleep 3
+      done
+      held=$(printf '%s' "$HTTP_BODY" | js 'd.plan.actions.filter(a=>a.kind==="hospital.reserve_beds"&&a.status==="SUCCEEDED").length')
+      [[ $pstatus == COMPLETED || $pstatus == PARTIAL ]] || { ok=0; why+=("plan not settled after 90 s ($pstatus)"); }
+      [[ ${held:-0} -ge 1 ]] || { ok=0; why+=("no bed reservation succeeded"); }
+      http GET "/hospitals/reservations?status=HELD"
+      [[ $(printf '%s' "$HTTP_BODY" | js "d.reservations.filter(r=>r.planId==='$pid').length") -ge 1 ]] || { ok=0; why+=("hospital-service shows no HELD reservation for the plan"); }
+      http POST "/response/plans/$pid/undo" '{}'
+      deadline=$((SECONDS + 60))
+      while ((SECONDS < deadline)); do
+        http GET "/hospitals/reservations?status=RELEASED"
+        released=$(printf '%s' "$HTTP_BODY" | js "d.reservations.filter(r=>r.planId==='$pid').length")
+        [[ ${released:-0} -ge ${held:-1} ]] && break
+        sleep 3
+      done
+      [[ ${released:-0} -ge 1 && ${released:-0} -ge ${held:-1} ]] || { ok=0; why+=("undo did not release the beds ($released of $held)"); }
+    fi
+  else
+    ok=0; why+=("check 14 created no disaster to plan for")
+  fi
+  ((ok)) && record "15 Smarter response" PASS "$label: plan with impact estimate; $held bed reservation(s) held on approval and released on undo" \
+         || record "15 Smarter response" FAIL "$label: ${why[*]}"
+
+  # Close the disasters checks 14 and 15 created.
   for dsid in "${created[@]}"; do
     http POST "/disasters/$dsid/status" '{"status":"CONTAINED","note":"verify-system cleanup"}'
     http POST "/disasters/$dsid/status" '{"status":"RESOLVED","note":"verify-system cleanup"}'
   done
-  ((ok)) && record "14 Automatic detection" PASS "$label: HIGH detection confirmed → disaster created via the gateway (second confirm 409), CRITICAL auto-confirmed, LOW dismissed" \
-         || record "14 Automatic detection" FAIL "$label: ${why[*]}"
 }
 
 # ======================================================================

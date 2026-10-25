@@ -41,11 +41,11 @@ until rabbitmqctl -q await_startup --timeout 10 >/dev/null 2>&1; do
   sleep 5
 done
 
-# Phase 15 added response-service's queue and the three command queues.
+# Phase 15 added response-service's queue and the command queues; Phase 20 the hospital one.
 if rabbitmqctl -q set_policy --apply-to queues --priority 1 sentinel-dead-letter \
-  '^q\.((hospital|ambulance|bloodbank|power)\.disaster-events|disaster\.reaction-aggregator|notifications\.all-events|response\.events|(ambulance|bloodbank|disaster)\.commands)$' \
+  '^q\.((hospital|ambulance|bloodbank|power)\.disaster-events|disaster\.reaction-aggregator|notifications\.all-events|response\.events|(ambulance|bloodbank|disaster|hospital)\.commands)$' \
   '{"dead-letter-exchange":"sentinelcloud.dlx"}' >/dev/null 2>&1; then
-  log "policy applied: failed messages on the ten durable queues go to sentinelcloud.dlx -> q.dead-letters"
+  log "policy applied: failed messages on the eleven durable queues go to sentinelcloud.dlx -> q.dead-letters"
 else
   log "FAILED to apply the dead-letter policy"
 fi

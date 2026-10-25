@@ -19,7 +19,7 @@ for svc in hospital-service ambulance-service disaster-service response-service;
   echo "synced outbox.js -> services/${svc}/src/"
 done
 # commands.js (Phase 15): the services that execute response-service's commands.
-for svc in ambulance-service disaster-service; do
+for svc in ambulance-service disaster-service hospital-service; do
   cp shared/node-broker/commands.js "services/${svc}/src/commands.js"
   echo "synced commands.js -> services/${svc}/src/"
 done

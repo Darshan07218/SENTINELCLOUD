@@ -44,6 +44,21 @@ export function registerDisasterConsumer({ consumeQueue, assertQueueAndBind, hos
       const totalAvailableIcuBeds = nearbyHospitals.reduce((sum, h) => sum + h.availableIcuBeds, 0);
       const totalAvailableVentilators = nearbyHospitals.reduce((sum, h) => sum + h.availableVentilators, 0);
 
+      // Phase 20: each hospital's 24 h forecast, so the response engine can
+      // avoid sending patients to one that is about to fill up. A forecast
+      // that fails is left out; it never blocks the reaction itself.
+      const forecasts = new Map();
+      await Promise.all(
+        nearbyHospitals.map(async (h) => {
+          try {
+            const f = await hospitalService.forecastCapacity(h.id, { horizonHours: 24 });
+            if (f) forecasts.set(h.id, { risk: f.risk, bedsPredictedPct: f.beds.predictedPct, hoursToFull: f.beds.hoursToThreshold });
+          } catch (err) {
+            console.warn(`[hospital-service] forecast for ${h.id} unavailable for the disaster reaction: ${err.message}`);
+          }
+        })
+      );
+
       await publishEvent(
         ROUTING_KEYS.HOSPITAL_CAPACITY_UPDATED,
         {
@@ -61,6 +76,7 @@ export function registerDisasterConsumer({ consumeQueue, assertQueueAndBind, hos
             availableIcuBeds: h.availableIcuBeds,
             availableVentilators: h.availableVentilators,
             emergencyStatus: h.emergencyStatus,
+            forecast: forecasts.get(h.id) || null,
           })),
         },
         disasterId // correlationId — ties this reaction back to the disaster that triggered it

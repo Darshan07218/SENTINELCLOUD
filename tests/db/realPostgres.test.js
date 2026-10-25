@@ -393,15 +393,60 @@ describe("real PostgreSQL 16", { skip: !ENABLED && "set SC_DB_TEST=1 SC_DB_TEST_
       assert.equal(rows[0].available_beds, Math.max(0, h.availableBeds - 1));
     });
 
+    // Phase 20: bed reservations.
+    test("a reservation takes beds off the free count, records history, and is idempotent per command", async () => {
+      const { createReservationService } = await importFile(path.join(SVC("hospital-service"), "src", "services", "reservations.js"));
+      const { withTransaction } = await importFile(path.join(SVC("hospital-service"), "src", "db", "transaction.js"));
+      const svc = createReservationService({ transaction: (fn) => withTransaction(pools.hospital, fn), pool: pools.hospital });
+      const [, h] = await repo.findAllForAlerts();
+      const commandId = randomUUID();
+      const first = await svc.reserve({ hospitalId: h.id, beds: 5, icuBeds: 1, commandId });
+      const again = await svc.reserve({ hospitalId: h.id, beds: 5, icuBeds: 1, commandId });
+      assert.equal(again.duplicate, true);
+      assert.equal(again.reservation.id, first.reservation.id);
+      const after = await repo.findById(h.id);
+      assert.equal(after.availableBeds, h.availableBeds - 5, "held once, not twice");
+      assert.equal(after.availableIcuBeds, h.availableIcuBeds - Math.min(1, h.availableIcuBeds));
+      const { rows } = await pools.hospital.query("SELECT available_beds FROM hospital_capacity_history WHERE hospital_id = $1 ORDER BY recorded_at DESC, id DESC LIMIT 1", [h.id]);
+      assert.equal(rows[0].available_beds, after.availableBeds, "the Phase 18 trigger recorded the drop");
+      const released = await svc.release(first.reservation.id);
+      assert.equal(released.alreadyReleased, false);
+      assert.equal((await repo.findById(h.id)).availableBeds, h.availableBeds);
+      assert.equal((await svc.release(first.reservation.id)).alreadyReleased, true);
+      assert.equal((await repo.findById(h.id)).availableBeds, h.availableBeds, "releasing twice gives nothing back twice");
+    });
+
+    test("concurrent reservations never take more beds than are free; with none free it is NO_CAPACITY", async () => {
+      const { createReservationService } = await importFile(path.join(SVC("hospital-service"), "src", "services", "reservations.js"));
+      const { withTransaction } = await importFile(path.join(SVC("hospital-service"), "src", "db", "transaction.js"));
+      const svc = createReservationService({ transaction: (fn) => withTransaction(pools.hospital, fn), pool: pools.hospital });
+      const [, , h] = await repo.findAllForAlerts();
+      await repo.updateAvailableBeds(h.id, 12);
+      const results = await Promise.allSettled(Array.from({ length: 6 }, () => svc.reserve({ hospitalId: h.id, beds: 5, commandId: randomUUID() })));
+      const held = results.filter((r) => r.status === "fulfilled").reduce((n, r) => n + r.value.reservation.beds, 0);
+      assert.equal(held, 12, "5 + 5 + 2, then nothing");
+      assert.equal((await repo.findById(h.id)).availableBeds, 0);
+      const refused = results.filter((r) => r.status === "rejected");
+      assert.ok(refused.length >= 1 && refused.every((r) => r.reason.code === "NO_CAPACITY"));
+      // Release everything: back to 12, never above the total.
+      for (const r of results.filter((x) => x.status === "fulfilled")) await svc.release(r.value.reservation.id);
+      assert.equal((await repo.findById(h.id)).availableBeds, 12);
+    });
+
     test("the demo backfill gives each hospital 72 h of history once, and the forecast uses it", async () => {
       const { backfillCapacityHistory } = await importFile(path.join(SVC("hospital-service"), "src", "db", "seed.js"));
+      // Hospitals the earlier tests changed already have history and are (rightly) not backfilled.
+      const { rows: eligible } = await pools.hospital.query(
+        "SELECT COUNT(*)::int AS n FROM hospitals h WHERE (SELECT COUNT(*) FROM hospital_capacity_history c WHERE c.hospital_id = h.id) <= 1"
+      );
       await quietly(() => backfillCapacityHistory(pools.hospital));
       await quietly(() => backfillCapacityHistory(pools.hospital)); // second run: nothing more
       const { rows } = await pools.hospital.query(
         "SELECT hospital_id, COUNT(*)::int AS n FROM hospital_capacity_history WHERE source = 'backfill' GROUP BY hospital_id"
       );
       const all = await repo.findAllForAlerts();
-      assert.ok(rows.length >= all.length - 1, "every hospital without history was backfilled");
+      assert.equal(rows.length, eligible[0].n, "every hospital without history was backfilled");
+      assert.ok(rows.length >= 1);
       assert.ok(rows.every((r) => r.n === 72), JSON.stringify(rows));
       const forecasts = await service.forecastAll({ horizonHours: 12 });
       assert.equal(forecasts.length, all.length);
@@ -642,7 +687,9 @@ describe("real PostgreSQL 16", { skip: !ENABLED && "set SC_DB_TEST=1 SC_DB_TEST_
       outbox = createOutbox({ pool, publish: async () => {} });
       outbox.kick = () => {};
       const transaction = (fn) => withTransaction(pool, (client) => fn({ repo: createResponseRepository(client), client }));
-      engine = createResponseService({ transaction, repository: createResponseRepository(pool), outbox, log: { log() {}, warn() {}, error() {} } });
+      // estimate: null — these tests pin the Phase 15 mechanics on the severity
+      // table; the Phase 20 impact path has its own test below.
+      engine = createResponseService({ transaction, repository: createResponseRepository(pool), outbox, log: { log() {}, warn() {}, error() {} }, estimate: null });
       envelope = (eventType, sourceService, payload, correlationId) => ({
         eventId: randomUUID(), eventType, sourceService, correlationId, occurredAt: new Date().toISOString(), payload,
       });
@@ -652,7 +699,7 @@ describe("real PostgreSQL 16", { skip: !ENABLED && "set SC_DB_TEST=1 SC_DB_TEST_
       (await pool.query(`SELECT routing_key, envelope FROM outbox WHERE routing_key LIKE 'command.%' AND envelope->'payload'->>'planId' = $1 ORDER BY id`, [planId])).rows
         .map((r) => ({ key: r.routing_key, payload: r.envelope.payload }));
     const reply = (cmd, result, ok = true) =>
-      engine.handleCommandReply(envelope(ok ? "command.succeeded" : "command.failed", cmd.key.startsWith("command.blood") ? "blood-bank-service" : cmd.key.startsWith("command.disaster") ? "disaster-service" : "ambulance-service",
+      engine.handleCommandReply(envelope(ok ? "command.succeeded" : "command.failed", cmd.key.startsWith("command.blood") ? "blood-bank-service" : cmd.key.startsWith("command.disaster") ? "disaster-service" : cmd.key.startsWith("command.hospital") ? "hospital-service" : "ambulance-service",
         ok ? { commandId: cmd.payload.commandId, result } : { commandId: cmd.payload.commandId, error: result }, cmd.payload.commandId));
 
     async function detect({ severity = "HIGH", radiusKm = 15, ambulances = 1 } = {}) {
@@ -664,6 +711,71 @@ describe("real PostgreSQL 16", { skip: !ENABLED && "set SC_DB_TEST=1 SC_DB_TEST_
       await engine.handleReaction(await reaction("blood.shortage.detected", "blood-bank-service", disasterId, { searchRadiusKm: radiusKm, nearbyBloodBanks: [{ id: randomUUID(), name: "Central Bank", distanceKm: 3 }], shortageAlerts: [] }));
       return { disasterId, base };
     }
+
+    // Phase 20: the same engine with the impact estimate (its default).
+    test("with the impact estimate: beds are held at the hospital not filling up, sent as a command, and released on undo", async () => {
+      const R = (q) => importFile(path.join(SVC("response-service"), "src", q));
+      const { createResponseRepository } = await R("repositories/responseRepository.js");
+      const { createResponseService } = await R("services/responseService.js");
+      const { withTransaction } = await R("db/transaction.js");
+      const transaction = (fn) => withTransaction(pool, (client) => fn({ repo: createResponseRepository(client), client }));
+      const smart = createResponseService({ transaction, repository: createResponseRepository(pool), outbox, log: { log() {}, warn() {}, error() {} } });
+      const disasterId = randomUUID();
+      const fillingId = randomUUID();
+      const healthyId = randomUUID();
+      await smart.handleDisasterEvent(envelope("disaster.detected", "disaster-service", { disasterId, type: "FLOOD", severity: "HIGH", latitude: 18.52, longitude: 73.855, radiusKm: 10, description: "phase 20", status: "ACTIVE" }, disasterId));
+      await smart.handleReaction(reaction("hospital.capacity.updated", "hospital-service", disasterId, { searchRadiusKm: 10, totalAvailableIcuBeds: 30, nearbyHospitals: [
+        { id: fillingId, name: "Filling Hospital", distanceKm: 1, availableBeds: 100, availableIcuBeds: 10, emergencyStatus: "NORMAL", forecast: { risk: "CRITICAL", hoursToFull: 3 } },
+        { id: healthyId, name: "Healthy Hospital", distanceKm: 4, availableBeds: 200, availableIcuBeds: 20, emergencyStatus: "NORMAL", forecast: { risk: "LOW", hoursToFull: null } },
+      ] }));
+      await smart.handleReaction(reaction("ambulance.status.updated", "ambulance-service", disasterId, { searchRadiusKm: 10, availableAmbulanceCount: 10 }));
+      await smart.handleReaction(reaction("blood.shortage.detected", "blood-bank-service", disasterId, { searchRadiusKm: 10, nearbyBloodBanks: [{ id: randomUUID(), name: "Central Bank", distanceKm: 3 }], shortageAlerts: [] }));
+
+      const [plan] = await smart.listPlans({ disasterId });
+      assert.ok(plan.needs.impact.casualties > 0, "the estimate is stored with the plan");
+      const beds = plan.actions.filter((a) => a.kind === "hospital.reserve_beds");
+      assert.ok(beds.length >= 1);
+      assert.equal(beds[0].params.hospitalId, healthyId, "the hospital that is not filling up is asked first");
+
+      await smart.approve(plan.id, operator);
+      const sent = await commandsSent(plan.id);
+      const bedCmds = sent.filter((c) => c.key === "command.hospital.reserve-beds");
+      assert.equal(bedCmds.length, beds.length);
+      for (const c of sent) {
+        const result = c.key === "command.hospital.reserve-beds"
+          ? { reservationId: randomUUID(), reservedBeds: c.payload.beds, reservedIcuBeds: c.payload.icuBeds, requestedBeds: c.payload.beds, requestedIcuBeds: c.payload.icuBeds }
+          : c.key === "command.ambulance.dispatch" ? { emergencyIds: [randomUUID()], dispatchedCount: c.payload.count }
+          : { reservationId: randomUUID() };
+        await smart.handleCommandReply(envelope("command.succeeded", c.key.startsWith("command.blood") ? "blood-bank-service" : c.key.startsWith("command.hospital") ? "hospital-service" : "ambulance-service", { commandId: c.payload.commandId, result }, c.payload.commandId));
+      }
+      assert.equal((await smart.getPlan(plan.id)).status, "COMPLETED");
+
+      await smart.undo(plan.id, operator);
+      const releases = (await commandsSent(plan.id)).filter((c) => c.key === "command.hospital.release-beds");
+      assert.equal(releases.length, beds.length, "undo releases every bed reservation");
+    });
+
+    // Regression (found in Phase 20): replies that arrive together used to leave the plan EXECUTING.
+    test("all replies arriving at the same moment still close the plan", async () => {
+      const { disasterId } = await detect({ ambulances: 4 });
+      const [plan] = await engine.listPlans({ disasterId });
+      await engine.approve(plan.id, operator);
+      const sent = await commandsSent(plan.id);
+      assert.ok(sent.length >= 3, "dispatch + two blood reservations");
+      await Promise.all(sent.map((c) => reply(c, c.key === "command.ambulance.dispatch" ? { emergencyIds: [randomUUID()], dispatchedCount: 4 } : { reservationId: randomUUID() })));
+      assert.equal((await engine.getPlan(plan.id)).status, "COMPLETED");
+    });
+
+    test("the sweep closes a plan whose actions all finished but that was left EXECUTING", async () => {
+      const { disasterId } = await detect({ ambulances: 4 });
+      const [plan] = await engine.listPlans({ disasterId });
+      await engine.approve(plan.id, operator);
+      // Simulate the old race: every action finished, the plan never closed.
+      await pool.query(`UPDATE response_actions SET status = 'SUCCEEDED', finished_at = now() WHERE plan_id = $1 AND status = 'PENDING'`, [plan.id]);
+      assert.equal((await engine.getPlan(plan.id)).status, "EXECUTING");
+      await engine.sweep();
+      assert.equal((await engine.getPlan(plan.id)).status, "COMPLETED");
+    });
 
     test("the three key reactions in → a revision-1 plan is proposed once (a 4th reaction doesn't re-plan)", async () => {
       const { disasterId } = await detect({ ambulances: 1 });

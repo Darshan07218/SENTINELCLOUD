@@ -16,7 +16,7 @@ import {
 
 const MANAGER_ROLES = ["HOSPITAL_ADMIN", "SYSTEM_ADMIN"];
 
-export function createHospitalRouter({ hospitalService, hospitalRepository }) {
+export function createHospitalRouter({ hospitalService, hospitalRepository, reservationService = null }) {
   const router = Router();
 
   // Phase 12: every :id in this API is a UUID. Reject anything else with a
@@ -83,6 +83,20 @@ export function createHospitalRouter({ hospitalService, hospitalRepository }) {
           ? Math.round(((summary.totalIcuBeds - summary.availableIcuBeds) / summary.totalIcuBeds) * 1000) / 10
           : 0;
       res.status(200).json({ summary });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Phase 20: beds held for response plans (newest first). Read-only here:
+  // plans hold them and undoing a plan releases them.
+  router.get("/reservations", async (req, res, next) => {
+    try {
+      if (!reservationService) return res.status(404).json({ error: { code: "NOT_FOUND", message: "Reservations are not enabled." } });
+      const status = ["HELD", "RELEASED"].includes(req.query.status) ? req.query.status : undefined;
+      const hospitalId = /^[0-9a-f-]{36}$/i.test(String(req.query.hospitalId || "")) ? req.query.hospitalId : undefined;
+      const reservations = await reservationService.list({ hospitalId, status });
+      res.status(200).json({ reservations, count: reservations.length });
     } catch (err) {
       next(err);
     }

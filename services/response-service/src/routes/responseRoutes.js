@@ -2,7 +2,8 @@ import { Router } from "express";
 import { z } from "zod";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { validateBody, validateQuery } from "../middleware/validate.js";
-import { NEEDS_BY_SEVERITY, TYPE_FACTORS, BLOOD_TYPES, MAX_RADIUS_KM } from "../playbook.js";
+import { NEEDS_BY_SEVERITY, TYPE_FACTORS, BLOOD_TYPES, MAX_RADIUS_KM, MAX_RESERVE_SHARE } from "../playbook.js";
+import { POPULATION_ZONES, RURAL_DENSITY, EXPOSURE, CASUALTIES_PER_10K, SEVERITY_MULTIPLIER, SHARES, TRIPS_PER_AMBULANCE } from "../impact.js";
 import { PLAN_WAIT_SECONDS, COMMAND_TIMEOUT_SECONDS } from "../services/responseService.js";
 
 // Same write roles as disasters: the people who run the emergency response.
@@ -72,6 +73,17 @@ export function createResponseRouter({ responseService, autoApprove }) {
       maxEscalatedRadiusKm: MAX_RADIUS_KM,
       planWaitSeconds: PLAN_WAIT_SECONDS,
       commandTimeoutSeconds: COMMAND_TIMEOUT_SECONDS,
+      // Phase 20: the impact model the needs are estimated with (impact.js).
+      impactModel: {
+        populationZones: POPULATION_ZONES,
+        ruralDensityPerKm2: RURAL_DENSITY,
+        exposure: EXPOSURE,
+        casualtiesPer10kExposedAtMedium: CASUALTIES_PER_10K,
+        severityMultiplier: SEVERITY_MULTIPLIER,
+        shares: SHARES,
+        tripsPerAmbulance: TRIPS_PER_AMBULANCE,
+        maxShareOfFreeBedsReserved: MAX_RESERVE_SHARE,
+      },
       note: "Demo policy, not clinical or emergency-management guidance.",
     });
   });

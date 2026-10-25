@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { fetchResponsePlans, decideResponsePlan } from "../lib/api.js";
-import { Alert, Badge, Card, Empty, Icon } from "./ui.jsx";
+import { Alert, Badge, Card, Empty, Icon, Tile } from "./ui.jsx";
 
 /**
  * Phase 15: the response plan for one disaster (docs/PHASE-15-RESPONSE-ENGINE.md).
@@ -31,7 +31,7 @@ const ACTION_COLORS = {
   UNDONE: "#a78bfa",
   UNDO_FAILED: "#ef4444",
 };
-const ACTION_ICONS = { "ambulance.dispatch": "ambulance", "blood.reserve": "droplet", "disaster.widen_radius": "radar", notice: "info" };
+const ACTION_ICONS = { "ambulance.dispatch": "ambulance", "blood.reserve": "droplet", "hospital.reserve_beds": "bed", "disaster.widen_radius": "radar", notice: "info" };
 
 function actionTitle(a) {
   const p = a.params || {};
@@ -40,6 +40,8 @@ function actionTitle(a) {
       return `Dispatch ${p.count} ambulance${p.count === 1 ? "" : "s"}`;
     case "blood.reserve":
       return `Reserve ${p.units} × ${p.bloodType} at ${p.bloodBankName} for ${p.hospitalName}`;
+    case "hospital.reserve_beds":
+      return `Hold ${p.beds} bed${p.beds === 1 ? "" : "s"}${p.icuBeds ? ` + ${p.icuBeds} ICU` : ""} at ${p.hospitalName}`;
     case "disaster.widen_radius":
       return `Widen the search from ${p.fromRadiusKm} km to ${p.radiusKm} km`;
     default:
@@ -49,13 +51,20 @@ function actionTitle(a) {
 
 function actionOutcome(a) {
   if (a.status === "FAILED" || a.status === "UNDO_FAILED") return a.error?.message || "Failed.";
-  if (a.status === "UNDONE") return a.kind === "ambulance.dispatch" ? "Calls cancelled, ambulances free again." : "Reservation released.";
+  if (a.status === "UNDONE") {
+    if (a.kind === "ambulance.dispatch") return "Calls cancelled, ambulances free again.";
+    return a.kind === "hospital.reserve_beds" ? "Beds released back to the hospital." : "Reservation released.";
+  }
   if (a.status !== "SUCCEEDED" || !a.result) return null;
   if (a.kind === "ambulance.dispatch") {
     const waiting = a.result.unassignedCount ? `, ${a.result.unassignedCount} call(s) waiting for a free ambulance` : "";
     return `${a.result.dispatchedCount} dispatched${waiting}.`;
   }
   if (a.kind === "blood.reserve") return `Reserved (reservation ${String(a.result.reservationId).slice(0, 8)}).`;
+  if (a.kind === "hospital.reserve_beds") {
+    const fewer = a.result.reservedBeds < a.result.requestedBeds || a.result.reservedIcuBeds < a.result.requestedIcuBeds;
+    return `Holding ${a.result.reservedBeds} bed(s)${a.result.reservedIcuBeds ? ` and ${a.result.reservedIcuBeds} ICU` : ""}${fewer ? " (fewer than asked: beds filled meanwhile)" : ""}.`;
+  }
   if (a.kind === "disaster.widen_radius") return a.result.changed ? `Radius is now ${a.result.radiusKm} km; services are re-checking.` : "Already that wide.";
   return null;
 }
@@ -72,8 +81,17 @@ function PlanView({ plan, canDecide, busy, onDecide }) {
       </div>
       <p style={{ margin: "0 0 0.5rem", fontSize: "0.76rem", color: "var(--muted)" }}>
         This {plan.disaster?.severity} {String(plan.disaster?.type || "").replace("_", " ")} needs {needs.ambulances} ambulance(s)
-        {needs.bloodUnitsPerType ? ` and ${needs.bloodUnitsPerType} unit(s) each of O− and O+` : ""} (demo playbook).
+        {needs.bloodUnitsPerType ? ` and ${needs.bloodUnitsPerType} unit(s) each of O− and O+` : ""}
+        {needs.hospitalBeds ? `, ${needs.hospitalBeds} hospital bed(s) and ${needs.icuBeds} ICU bed(s)` : ""} (demo model).
       </p>
+      {needs.impact && (
+        <div className="sc-stats" style={{ marginBottom: "0.6rem" }}>
+          <Tile label="People in zone" value={needs.impact.population} />
+          <Tile label="Exposed" value={needs.impact.exposed} />
+          <Tile label="Est. casualties" value={needs.impact.casualties} color="#f97316" />
+          <Tile label="Beds needed" value={needs.impact.hospitalBeds} />
+        </div>
+      )}
       <ol style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: 6 }}>
         {plan.actions.map((a) => {
           const outcome = actionOutcome(a);

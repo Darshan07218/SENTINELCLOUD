@@ -36,11 +36,12 @@ export const MAX_RADIUS_KM = 50;
 export const ACTION_KINDS = Object.freeze({
   AMBULANCE_DISPATCH: "ambulance.dispatch",
   BLOOD_RESERVE: "blood.reserve",
+  BEDS_RESERVE: "hospital.reserve_beds", // Phase 20
   WIDEN_RADIUS: "disaster.widen_radius",
   NOTICE: "notice",
 });
 
-/** Ambulances and blood units per type this disaster calls for. */
+/** Ambulances and blood units per type this disaster calls for (the severity table: the minimum). */
 export function computeNeeds({ type, severity }) {
   const base = NEEDS_BY_SEVERITY[severity] || NEEDS_BY_SEVERITY.MEDIUM;
   const factor = TYPE_FACTORS[type] || { ambulances: 1, blood: 1 };
@@ -50,20 +51,78 @@ export function computeNeeds({ type, severity }) {
   };
 }
 
+/**
+ * Phase 20: the table above is the floor; the impact estimate (impact.js)
+ * raises it when the zone's population says more is needed, and adds the
+ * beds and ICU beds to reserve. Without an estimate: the table alone.
+ */
+export function combineNeeds(disaster, impact) {
+  const base = computeNeeds(disaster);
+  if (!impact) return base;
+  return {
+    ambulances: Math.max(base.ambulances, impact.ambulances),
+    bloodUnitsPerType: Math.max(base.bloodUnitsPerType, impact.bloodUnitsPerType),
+    hospitalBeds: impact.hospitalBeds,
+    icuBeds: impact.icuBeds,
+    estimatedCasualties: impact.casualties,
+  };
+}
+
+/** Phase 20: a hospital never gives more than this share of its free beds to one plan. */
+export const MAX_RESERVE_SHARE = 0.8;
+/** At most this many hospitals per bed-reservation round. */
+export const MAX_RESERVE_HOSPITALS = 6;
+
+/** True if the hospital's 24 h forecast says it will be (or is) full soon. */
+export function fillsSoon(h) {
+  const f = h?.forecast;
+  return Boolean(f && (f.risk === "CRITICAL" || (Number.isFinite(f.hoursToFull) && f.hoursToFull <= 6)));
+}
+
+/**
+ * Hospitals in the order beds are taken from them: not overloaded and not
+ * filling up per the forecast first, then those filling up, then overloaded
+ * ones; nearest first within each group.
+ */
+export function rankHospitals(hospitalReaction, { exclude = [] } = {}) {
+  const list = (Array.isArray(hospitalReaction?.nearbyHospitals) ? hospitalReaction.nearbyHospitals : []).filter((h) => !exclude.includes(h.id));
+  const group = (h) => (h.emergencyStatus === "OVERLOADED" ? 2 : fillsSoon(h) ? 1 : 0);
+  return [...list].sort((a, b) => group(a) - group(b) || a.distanceKm - b.distanceKm);
+}
+
+/**
+ * Spreads `beds` and `icuBeds` over the ranked hospitals, taking at most
+ * MAX_RESERVE_SHARE of each one's free beds (the rest stays for everyday
+ * patients). Returns { allocations: [{ hospital, beds, icuBeds }], shortBeds, shortIcu }.
+ */
+export function allocateBeds(hospitalReaction, { beds, icuBeds, exclude = [] }) {
+  let needBeds = Math.max(0, beds);
+  let needIcu = Math.max(0, icuBeds);
+  const allocations = [];
+  for (const h of rankHospitals(hospitalReaction, { exclude })) {
+    if ((needBeds === 0 && needIcu === 0) || allocations.length >= MAX_RESERVE_HOSPITALS) break;
+    const takeBeds = Math.min(needBeds, Math.floor((h.availableBeds || 0) * MAX_RESERVE_SHARE));
+    const takeIcu = Math.min(needIcu, Math.floor((h.availableIcuBeds || 0) * MAX_RESERVE_SHARE));
+    if (takeBeds + takeIcu === 0) continue;
+    allocations.push({ hospital: h, beds: takeBeds, icuBeds: takeIcu });
+    needBeds -= takeBeds;
+    needIcu -= takeIcu;
+  }
+  return { allocations, shortBeds: needBeds, shortIcu: needIcu };
+}
+
 /** The escalated radius: double, at least +5 km, never past MAX_RADIUS_KM. */
 export function widenedRadius(radiusKm) {
   return Math.min(MAX_RADIUS_KM, Math.max(radiusKm * 2, radiusKm + 5));
 }
 
-/** Nearest hospital that can take patients (free beds, not OVERLOADED), else the nearest with free beds. */
+/**
+ * Nearest hospital that can take patients (free beds, not OVERLOADED), else
+ * the nearest with free beds. Phase 20: one whose forecast says it fills up
+ * within 6 hours comes after the others.
+ */
 export function pickReceivingHospital(hospitalReaction) {
-  const list = Array.isArray(hospitalReaction?.nearbyHospitals) ? hospitalReaction.nearbyHospitals : [];
-  const byDistance = [...list].sort((a, b) => a.distanceKm - b.distanceKm);
-  return (
-    byDistance.find((h) => h.availableBeds > 0 && h.emergencyStatus !== "OVERLOADED") ||
-    byDistance.find((h) => h.availableBeds > 0) ||
-    null
-  );
+  return rankHospitals(hospitalReaction).find((h) => h.availableBeds > 0) || null;
 }
 
 /** True if the reaction reports LOW_STOCK of `bloodType` at this bank. */
@@ -92,11 +151,12 @@ export function pickBloodBank(bloodReaction, { bloodType, exclude = [] } = {}) {
  * @param reactions  { hospital?, ambulance?, blood?, power? } — reaction payloads for the CURRENT radius
  * @param revision   1 = first plan; 2 = follow-up after an escalation (shortfall only, no second escalation)
  * @param delivered  what earlier revisions already achieved: { ambulances, bloodUnits: { "O-": n },
- *                   failedBloodBanks: { "O-": [bankId] } } — banks not to ask again for that type
+ *                   failedBloodBanks: { "O-": [bankId] }, beds, icuBeds, failedHospitals: [id] }
+ * @param impact     Phase 20: estimateImpact(disaster) (impact.js); absent = severity table only, no beds
  * @returns { needs, actions: [{ kind, params, reason }] }
  */
-export function buildPlan({ disaster, reactions = {}, revision = 1, delivered = { ambulances: 0, bloodUnits: {} } }) {
-  const needs = computeNeeds(disaster);
+export function buildPlan({ disaster, reactions = {}, revision = 1, delivered = { ambulances: 0, bloodUnits: {} }, impact = null }) {
+  const needs = combineNeeds(disaster, impact);
   const actions = [];
   const radius = disaster.radiusKm;
 
@@ -135,13 +195,45 @@ export function buildPlan({ disaster, reactions = {}, revision = 1, delivered = 
     }
   }
 
+  // --- Beds (Phase 20) ---------------------------------------------------
+  let bedHospital = null;
+  if (impact) {
+    const wantBeds = Math.max(0, (needs.hospitalBeds || 0) - (delivered.beds || 0));
+    const wantIcu = Math.max(0, (needs.icuBeds || 0) - (delivered.icuBeds || 0));
+    if (wantBeds + wantIcu > 0) {
+      if (!reactions.hospital) {
+        actions.push({ kind: ACTION_KINDS.NOTICE, params: { topic: "beds-unplaced" }, reason: "Bed reservation skipped: hospital information hasn't arrived yet." });
+      } else {
+        const { allocations, shortBeds, shortIcu } = allocateBeds(reactions.hospital, { beds: wantBeds, icuBeds: wantIcu, exclude: delivered.failedHospitals || [] });
+        for (const { hospital: h, beds, icuBeds } of allocations) {
+          actions.push({
+            kind: ACTION_KINDS.BEDS_RESERVE,
+            params: { hospitalId: h.id, hospitalName: h.name, beds, icuBeds },
+            reason:
+              `Hold ${beds} bed(s)${icuBeds ? ` and ${icuBeds} ICU bed(s)` : ""} at ${h.name} (${h.distanceKm} km, ${h.availableBeds} free)` +
+              (fillsSoon(h) ? "; its forecast says it fills up soon, so it is asked after the others." : "."),
+          });
+        }
+        bedHospital = allocations[0]?.hospital || null;
+        if (shortBeds + shortIcu > 0) {
+          actions.push({
+            kind: ACTION_KINDS.NOTICE,
+            params: { topic: "bed-shortfall", shortBeds, shortIcu },
+            reason: `${shortBeds} bed(s) and ${shortIcu} ICU bed(s) of the estimated need can't be held within ${radius} km (hospitals keep 20% of their free beds): alert hospitals further out.`,
+          });
+        }
+      }
+    }
+  }
+
   // --- Blood ------------------------------------------------------------
   const bloodWanted = BLOOD_TYPES.map((bloodType) => ({
     bloodType,
     units: Math.max(0, needs.bloodUnitsPerType - (delivered.bloodUnits?.[bloodType] || 0)),
   })).filter((b) => b.units > 0);
   if (bloodWanted.length > 0) {
-    const hospital = pickReceivingHospital(reactions.hospital);
+    // Blood follows the patients: to the hospital holding the most beds, else the best receiving one.
+    const hospital = bedHospital || pickReceivingHospital(reactions.hospital);
     if (!hospital || !reactions.blood) {
       actions.push({
         kind: ACTION_KINDS.NOTICE,
@@ -175,8 +267,19 @@ export function buildPlan({ disaster, reactions = {}, revision = 1, delivered = 
 
   // --- Things only a person can act on (first plan only) ----------------
   if (revision === 1) {
+    if (impact) {
+      actions.unshift({
+        kind: ACTION_KINDS.NOTICE,
+        params: { topic: "impact-estimate", population: impact.population, exposed: impact.exposed, casualties: impact.casualties },
+        reason:
+          `Estimate: ~${impact.population.toLocaleString("en-IN")} people live within ${radius} km, ~${impact.exposed.toLocaleString("en-IN")} exposed; ~${impact.casualties} casualties expected, ` +
+          `needing ~${impact.hospitalBeds} bed(s), ~${impact.icuBeds} ICU bed(s) and ~${impact.transport} ambulance transport(s). Demo model, not a forecast to act on alone.`,
+      });
+    }
+    // Without an estimate, the old rule of thumb: about one ICU bed per ambulance sent.
+    // With one, the bed-shortfall notice above already covers ICU beds.
     const icu = reactions.hospital?.totalAvailableIcuBeds;
-    if (Number.isInteger(icu) && icu < needs.ambulances) {
+    if (!impact && Number.isInteger(icu) && icu < needs.ambulances) {
       actions.push({
         kind: ACTION_KINDS.NOTICE,
         params: { topic: "icu-capacity", availableIcuBeds: icu },
@@ -184,11 +287,17 @@ export function buildPlan({ disaster, reactions = {}, revision = 1, delivered = 
       });
     }
     const atRisk = reactions.power?.totalAtRiskTransformerCount;
-    if (Number.isInteger(atRisk) && atRisk > 0) {
+    // Phase 20: transformers the risk forecast flags (score ≥ 50) while still NORMAL now.
+    const forecastRisk = Array.isArray(reactions.power?.forecastAtRiskTransformers) ? reactions.power.forecastAtRiskTransformers : [];
+    const flagged = forecastRisk.filter((t) => t.status === "NORMAL");
+    if ((Number.isInteger(atRisk) && atRisk > 0) || flagged.length > 0) {
+      const parts = [];
+      if (atRisk > 0) parts.push(`${atRisk} transformer(s) already at risk`);
+      if (flagged.length > 0) parts.push(`${flagged.length} more flagged by the risk forecast (${flagged.slice(0, 3).map((t) => `${t.code} ${t.score}/100`).join(", ")})`);
       actions.push({
         kind: ACTION_KINDS.NOTICE,
-        params: { topic: "power-at-risk", atRiskTransformers: atRisk },
-        reason: `${atRisk} transformer(s) at risk within ${radius} km: send a line crew before hospitals lose power.`,
+        params: { topic: "power-at-risk", atRiskTransformers: atRisk || 0, forecastFlagged: flagged.length },
+        reason: `${parts.join("; ")} within ${radius} km: send a line crew before hospitals lose power.`,
       });
     }
   }

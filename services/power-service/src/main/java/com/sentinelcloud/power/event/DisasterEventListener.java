@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.sentinelcloud.power.domain.InfraStatus;
 import com.sentinelcloud.power.dto.SubstationDtos.SubstationResponse;
 import com.sentinelcloud.power.entity.Transformer;
+import com.sentinelcloud.power.service.RiskForecastService;
 import com.sentinelcloud.power.service.SubstationService;
 import com.sentinelcloud.power.service.TransformerService;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
@@ -32,10 +33,15 @@ public class DisasterEventListener {
     private final TransformerService transformerService;
     private final EventPublisher eventPublisher;
     private final EventMetrics eventMetrics;
+    private final RiskForecastService riskForecastService;
+
+    /** Phase 20: a transformer whose 24 h risk score reaches this is reported even if it is still NORMAL. */
+    static final int FORECAST_RISK_SCORE = 50;
 
     public DisasterEventListener(SubstationService substationService, TransformerService transformerService, EventPublisher eventPublisher,
-                                 EventMetrics eventMetrics) {
+                                 EventMetrics eventMetrics, RiskForecastService riskForecastService) {
         this.eventMetrics = eventMetrics;
+        this.riskForecastService = riskForecastService;
         this.substationService = substationService;
         this.transformerService = transformerService;
         this.eventPublisher = eventPublisher;
@@ -107,12 +113,34 @@ public class DisasterEventListener {
 
         long totalAtRisk = substationsWithTransformers.stream().mapToLong(m -> (long) m.get("atRiskTransformerCount")).sum();
 
+        // Phase 20: the transformers in the zone the risk forecast (Phase 18)
+        // scores FORECAST_RISK_SCORE or more: where load and temperature are
+        // heading, not only what has already failed. A forecast that fails is
+        // left out; it never blocks the reaction.
+        List<Map<String, Object>> forecastAtRisk = new java.util.ArrayList<>();
+        for (SubstationResponse s : nearbySubstations) {
+            for (Transformer t : transformerService.listForSubstation(s.id())) {
+                try {
+                    var risk = riskForecastService.forecast(t.getId(), 24);
+                    if (risk.forecast().score() >= FORECAST_RISK_SCORE) {
+                        forecastAtRisk.add(Map.of(
+                            "id", t.getId(), "code", t.getCode(), "status", t.getStatus().name(),
+                            "score", risk.forecast().score(), "level", risk.forecast().level(), "substationName", s.name()));
+                    }
+                } catch (RuntimeException e) {
+                    System.err.printf("[power-service] risk forecast for %s unavailable for the disaster reaction: %s%n", t.getId(), clean(e.getMessage()));
+                }
+            }
+        }
+        forecastAtRisk.sort((a, b) -> Integer.compare((int) b.get("score"), (int) a.get("score")));
+
         Map<String, Object> reactionPayload = Map.of(
             "disasterId", disasterId,
             "searchRadiusKm", radiusKm,
             "nearbySubstationCount", nearbySubstations.size(),
             "totalAtRiskTransformerCount", totalAtRisk,
-            "nearbySubstations", substationsWithTransformers
+            "nearbySubstations", substationsWithTransformers,
+            "forecastAtRiskTransformers", forecastAtRisk
         );
 
         eventPublisher.publish(EventRoutingKeys.POWER_INFRASTRUCTURE_AT_RISK, disasterId, reactionPayload);

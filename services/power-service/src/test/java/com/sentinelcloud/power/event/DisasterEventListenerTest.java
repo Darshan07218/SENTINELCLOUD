@@ -5,7 +5,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sentinelcloud.power.domain.InfraStatus;
 import com.sentinelcloud.power.dto.SubstationDtos.SubstationResponse;
 import com.sentinelcloud.power.entity.Transformer;
+import com.sentinelcloud.power.service.RiskForecastService;
 import com.sentinelcloud.power.service.SubstationService;
+import com.sentinelcloud.power.service.TransformerRiskForecaster;
 import com.sentinelcloud.power.service.TransformerService;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
@@ -35,6 +37,7 @@ class DisasterEventListenerTest {
     private SubstationService substationService;
     private TransformerService transformerService;
     private EventPublisher eventPublisher;
+    private RiskForecastService riskForecastService;
     private DisasterEventListener listener;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -43,7 +46,8 @@ class DisasterEventListenerTest {
         substationService = mock(SubstationService.class);
         transformerService = mock(TransformerService.class);
         eventPublisher = mock(EventPublisher.class);
-        listener = new DisasterEventListener(substationService, transformerService, eventPublisher, new EventMetrics(new SimpleMeterRegistry()));
+        riskForecastService = mock(RiskForecastService.class);
+        listener = new DisasterEventListener(substationService, transformerService, eventPublisher, new EventMetrics(new SimpleMeterRegistry()), riskForecastService);
     }
 
     private EventEnvelope envelopeFor(String disasterId, double lat, double lng, Double radiusKm) {
@@ -93,6 +97,43 @@ class DisasterEventListenerTest {
         @SuppressWarnings("unchecked")
         Map<String, Object> payload = (Map<String, Object>) payloadCaptor.getValue();
         assertEquals(2L, payload.get("totalAtRiskTransformerCount"), "only the WARNING and FAILED transformers should count as at-risk, not the NORMAL one");
+    }
+
+    /** Phase 20: a transformer whose risk forecast scores 50+ is reported even while it is still NORMAL. */
+    @Test
+    void listsTransformersTheRiskForecastFlagsHighestScoreFirst() {
+        String disasterId = UUID.randomUUID().toString();
+        UUID substationId = UUID.randomUUID();
+        SubstationResponse substation = new SubstationResponse(substationId, "Test Substation", "Addr", 18.5, 73.8, "Zone", null, 3.1, null, null);
+        when(substationService.findNearby(anyDouble(), anyDouble(), anyDouble())).thenReturn(List.of(substation));
+        Transformer calm = new Transformer(substationId, "TXF-CALM", "Calm", 33.0, 400.0, LocalDate.now());
+        Transformer heating = new Transformer(substationId, "TXF-HOT", "Heating", 33.0, 400.0, LocalDate.now());
+        Transformer worse = new Transformer(substationId, "TXF-WORSE", "Worse", 33.0, 400.0, LocalDate.now());
+        Transformer broken = new Transformer(substationId, "TXF-ERR", "Forecast fails", 33.0, 400.0, LocalDate.now());
+        for (Transformer t : List.of(calm, heating, worse, broken)) ReflectionTestUtils.setField(t, "id", UUID.randomUUID());
+        when(transformerService.listForSubstation(substationId)).thenReturn(List.of(calm, heating, worse, broken));
+        when(riskForecastService.forecast(eq(calm.getId()), anyInt())).thenReturn(risk(calm, 12));
+        when(riskForecastService.forecast(eq(heating.getId()), anyInt())).thenReturn(risk(heating, 55));
+        when(riskForecastService.forecast(eq(worse.getId()), anyInt())).thenReturn(risk(worse, 81));
+        when(riskForecastService.forecast(eq(broken.getId()), anyInt())).thenThrow(new IllegalStateException("db down"));
+
+        listener.onDisasterEvent(envelopeFor(disasterId, 18.5, 73.8, 25.0));
+
+        ArgumentCaptor<Object> payloadCaptor = ArgumentCaptor.forClass(Object.class);
+        verify(eventPublisher).publish(eq(EventRoutingKeys.POWER_INFRASTRUCTURE_AT_RISK), eq(disasterId), payloadCaptor.capture());
+        @SuppressWarnings("unchecked")
+        Map<String, Object> payload = (Map<String, Object>) payloadCaptor.getValue();
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> flagged = (List<Map<String, Object>>) payload.get("forecastAtRiskTransformers");
+        assertEquals(List.of("TXF-WORSE", "TXF-HOT"), flagged.stream().map(m -> m.get("code")).toList(), "score >= 50 only, highest first; a failing forecast is skipped");
+        assertEquals("NORMAL", flagged.get(0).get("status"));
+        assertEquals(0L, payload.get("totalAtRiskTransformerCount"), "none is failing yet");
+    }
+
+    private static RiskForecastService.TransformerRisk risk(Transformer t, int score) {
+        var forecast = new TransformerRiskForecaster.RiskForecast("OK", score, score >= 75 ? "CRITICAL" : score >= 50 ? "HIGH" : "LOW", 24, 10, 10.0,
+            null, null, 0, 0.0, List.of(), List.of());
+        return new RiskForecastService.TransformerRisk(t.getId(), t.getCode(), t.getName(), t.getSubstationId(), "Test Substation", "NORMAL", null, null, forecast);
     }
 
     @Test
